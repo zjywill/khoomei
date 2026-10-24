@@ -27,7 +27,9 @@ import (
 	"github.com/zjywill/khoomei/internal/config"
 	"github.com/zjywill/khoomei/internal/hub"
 	"github.com/zjywill/khoomei/internal/mailbox"
+	"github.com/zjywill/khoomei/internal/mcp"
 	"github.com/zjywill/khoomei/internal/protocol"
+	"github.com/zjywill/khoomei/internal/watch"
 )
 
 const usage = `khoomei: one low drone, many overtones.
@@ -42,6 +44,8 @@ Commands:
   inbox    list pending messages
   wait     long-poll until a message arrives (exit 4 on timeout)
   ack      acknowledge handled messages
+  watch    long-poll in a loop and run a local command when messages arrive (caller-side wake)
+  mcp      serve the four tools over stdio for MCP hosts such as Claude Code and Codex
   doctor   read-only status report
 
 Data directory: --home, $KHOOMEI_HOME, or ~/.khoomei.
@@ -84,6 +88,7 @@ func run(args []string) error {
 	cmds := map[string]func(context.Context, *config.Config, []string) error{
 		"setup": cmdSetup, "agent": cmdAgent, "serve": cmdServe, "send": cmdSend,
 		"inbox": cmdInbox, "wait": cmdWait, "ack": cmdAck, "doctor": cmdDoctor,
+		"watch": cmdWatch, "mcp": cmdMCP,
 	}
 	fn, ok := cmds[rest[0]]
 	if !ok {
@@ -473,6 +478,47 @@ func cmdAck(ctx context.Context, cfg *config.Config, args []string) error {
 	}
 	printJSON(resp)
 	return nil
+}
+
+func cmdWatch(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("watch", flag.ExitOnError)
+	as := fs.String("as", "", "agent whose inbox to watch")
+	command := fs.String("exec", "", "shell command to run when new messages arrive (they arrive as JSON on stdin)")
+	poll := fs.Int("poll", 50, "seconds per long-poll (max 120)")
+	repeat := fs.Duration("repeat", 10*time.Minute, "re-run the command for messages still unacknowledged after this long")
+	fs.Parse(args)
+	if *command == "" {
+		return errors.New("--exec is required")
+	}
+	agent, err := agentName(cfg, *as)
+	if err != nil {
+		return err
+	}
+	c, done, err := hubClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer done()
+	logf("watching inbox of %s; handler: %s", agent, *command)
+	w := &watch.Watcher{Client: c, Agent: agent, Command: *command, Poll: time.Duration(*poll) * time.Second, Repeat: *repeat, Logf: logf}
+	return w.Run(ctx)
+}
+
+func cmdMCP(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+	as := fs.String("as", "", "agent this server speaks as")
+	fs.Parse(args)
+	agent, err := agentName(cfg, *as)
+	if err != nil {
+		return err
+	}
+	c, done, err := hubClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer done()
+	s := &mcp.Server{Client: c, Agent: agent, Version: hub.Version}
+	return s.Serve(ctx, os.Stdin, os.Stdout)
 }
 
 func cmdDoctor(ctx context.Context, cfg *config.Config, _ []string) error {

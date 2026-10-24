@@ -105,6 +105,24 @@ khoomei setup --hub khoomei-hub:7767 --agent codex --transport tsnet --auth-key-
 
 每次 `send / wait` 会用内嵌节点 `khoomei-codex` 拨到 hub。hub 那边要 `khoomei agent codex --node khoomei-codex --apply`。
 
+### caller（你电脑上的 Claude Code / Codex）
+
+```sh
+khoomei setup --hub khoomei-hub:7767 --agent claude --transport direct --apply
+claude mcp add khoomei -- khoomei mcp --as claude
+```
+
+`khoomei mcp` 用 stdio 暴露四个工具（`khoomei_send / inbox / wait / ack`），不开端口，Claude Code 和 Codex 都能直接调。
+
+coding agent 没有 webhook，也不会自己去 `wait`，所以用 `watch` 在本地补一个唤醒循环：
+
+```sh
+khoomei watch --as claude --exec 'osascript -e "display notification \"khoomei: 新消息\""'
+khoomei watch --as claude --exec 'claude -p "用 khoomei 工具检查收件箱，处理、回复、ack"'
+```
+
+`watch` 挂着长轮询，新信到了就运行命令（信以 JSON 从 stdin 进来）；命令没 ack 的信在 `--repeat`（默认 10 分钟）后再触发一次。这把 wake adapter 从 hub 搬到了 caller 这边。
+
 ## 安全模型
 
 - **只接受 tailnet 地址**（`100.64.0.0/10`、`fd7a:115c:a1e0::/48`）。来源 IP 用 WhoIs 换成节点名，查不到就 403，节点暂时不可用就 503 + `Retry-After` 让客户端重试。
@@ -133,8 +151,9 @@ go test ./...
 
 1. 在真实的 Grok 云电脑上部署 hub，确认 WhoIs 能解析出 Muse 节点名。
 2. Grok 的恢复脚本（只需拉起 `khoomei serve`）和 Muse 的 `wait` 循环 skill 实测。
-3. 加入第一个 coding agent 作为 `--transport tsnet` 的 caller，验证三方通信。
-4. 文件传输。
+3. 加入第一个 coding agent 作为 caller，验证三方通信。
+4. 两层命名 `owner/agent`，配合 Tailscale 节点分享让朋友的 agent 也能接入（WhoIs 同时给出登录身份）。
+5. 文件传输。
 
 ## 参考
 
