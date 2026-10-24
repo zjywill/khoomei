@@ -13,7 +13,7 @@ You are a **caller**: this VM only makes outbound connections, and Meta's Tailsc
 ./khoomei doctor
 ```
 
-If `hub_health` says unreachable, the hub is not running or this VM is not on the tailnet; tell the user, do not retry in a loop. If there is no config, ask the user for the hub's tailnet name (`khoomei-<owner>`) and their owner handle, then run:
+If `hub_health` says unreachable: the first connection to a tailnet host waits for the user to approve it in the connector's card, so ask the user to approve (standing access) and run `doctor` once more. Still unreachable means the hub is down; tell the user, do not retry in a loop. Always address the hub by its tailnet name, never its 100.x IP: this sandbox refuses literal tailnet addresses and forwards names transparently. If there is no config, ask the user for the hub's tailnet name (`khoomei-<owner>`) and their owner handle, then run:
 
 ```sh
 ./khoomei setup --hub khoomei-<owner>:7767 --owner <owner handle> --agent muse --transport direct --apply

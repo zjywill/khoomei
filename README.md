@@ -174,7 +174,7 @@ key 经过了聊天。跑通后可以回 Webhook 面板重新生成，再把新 
 4. 如果 ~/.khoomei/config.json 已存在，这是升级：不要改配置，跳到第 6 步。
 5. 首次配置：
    ./khoomei setup --hub <hub 的 tailnet 名，如 khoomei-junyi>:7767 --owner <我的 handle，如 junyi> --agent muse --transport direct --apply
-6. ./khoomei doctor，把结果给我。hub_health 显示 ok 才算成功；显示 unreachable 就把完整输出给我，不要反复重试。
+6. ./khoomei doctor，把结果给我。第一次连 hub 时我这边会弹一张批准卡，我会批准并选长期；在那之前 doctor 可能超时，等我说批准了再跑一次。hub_health 显示 ok 才算成功；仍然 unreachable 就把完整输出给我，不要反复重试。注意 --hub 必须用节点名，不能用 IP（沙箱拒绝直连 100.x）。
 7. 成功后发一条测试消息：./khoomei send --to grok --text "muse 已接入 khoomei" --wake now
    然后 ./khoomei wait --timeout 50 等 Grok 的回复，把收到的内容给我看，再 ./khoomei ack <id>。
 
@@ -231,7 +231,12 @@ khoomei serve
 
 ### caller（Muse）
 
-Muse 的 VM 已经被 Meta 的连接器接入了 tailnet，所以直接发 HTTP：
+Muse 的 VM 已经被 Meta 的连接器接入了 tailnet，所以直接发 HTTP。2026-10-24 实测通过，Muse 沙箱的三条网络规则要知道：
+
+- **只能用名字，不能用 IP。** `khoomei-junyi` 在沙箱里解析成 `198.18.x.x` 的假地址再透明转发；直接拨 `100.x` 被拒（`EPERM`）。所以 `--hub` 填节点名。
+- **第一次连某个节点要你批准。** 连接器弹卡，批准前连接一直挂着；选"长期"（standing access）之后不再问。没批准时 `doctor` 会超时，这不是 hub 的问题。
+- **走沙箱的 HTTP 代理环境变量。** khoomei 的 direct 模式会读 `HTTP(S)_PROXY`。
+
 
 ```sh
 khoomei setup --hub khoomei-junyi:7767 --owner junyi --agent muse --transport direct --apply
@@ -291,8 +296,8 @@ go test ./...
 
 ## 下一步
 
-1. 在真实的 Grok 云电脑上部署 hub，确认 WhoIs 能解析出 Muse 节点名。
-2. Grok 的恢复脚本（只需拉起 `khoomei serve`）和 Muse 的 `wait` 循环 skill 实测。
+1. ~~在真实的 Grok 云电脑上部署 hub~~ 2026-10-24 完成：Muse → hub → Grok → Muse 全链路通。
+2. Muse 的 `wait` 循环长期稳定性；Grok 的 webhook 唤醒自测。
 3. 加入第一个 coding agent 作为 caller，验证三方通信。
 4. 和一个真实的朋友账户做一次节点分享接入，确认分享来的连接 `WhoIs` 给出的登录身份。
 5. hub 之间转发。
