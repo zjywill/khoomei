@@ -5,10 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/zjywill/khoomei/internal/protocol"
@@ -33,30 +37,47 @@ type Response struct {
 	Version   string            `json:"version,omitempty"`
 }
 
+// New returns a client. Connections are not reused: the path to a hub often runs through a DERP
+// relay or a sandbox proxy that silently drops idle connections, and a reused dead connection
+// surfaces as EOF on the next call.
 func New(base string, hc *http.Client) *Client {
 	if hc == nil {
-		hc = &http.Client{}
+		hc = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	} else if t, ok := hc.Transport.(*http.Transport); ok {
+		t.DisableKeepAlives = true
 	}
 	return &Client{Base: base, HTTP: hc}
 }
 
 func (c *Client) call(ctx context.Context, method, path string, body any, timeout time.Duration) (*Response, error) {
-	var buf bytes.Buffer
+	var payload []byte
 	if body != nil {
-		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		var err error
+		if payload, err = json.Marshal(body); err != nil {
 			return nil, err
 		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, &buf)
-	if err != nil {
-		return nil, err
+	// One retry on a connection-level failure. Every call is idempotent: /msg by message id,
+	// the rest by nature.
+	var resp *http.Response
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		var req *http.Request
+		req, err = http.NewRequestWithContext(ctx, method, c.Base+path, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err = c.HTTP.Do(req)
+		if err == nil || ctx.Err() != nil || !transient(err) {
+			break
+		}
+		time.Sleep(time.Second)
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach %s: %w", c.Base, err)
 	}
@@ -66,6 +87,19 @@ func (c *Client) call(ctx context.Context, method, path string, body any, timeou
 		return nil, fmt.Errorf("%s: bad response (%d)", path, resp.StatusCode)
 	}
 	return out, nil
+}
+
+// transient reports connection-level failures worth one retry: EOF, reset, refused, dial failures.
+func transient(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return false // the deadline is the caller's budget; do not spend it twice
+	}
+	var oe *net.OpError
+	return errors.As(err, &oe)
 }
 
 func (c *Client) Health(ctx context.Context) (*Response, error) {

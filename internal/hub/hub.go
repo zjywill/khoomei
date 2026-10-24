@@ -17,7 +17,7 @@ import (
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 var (
 	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
@@ -203,14 +203,36 @@ func (h *Hub) Handler() http.Handler {
 	return mux
 }
 
+// statusWriter records the status code so every request can be logged in one line.
+type statusWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	s.code = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
 func (h *Hub) withIdentity(fn func(http.ResponseWriter, *http.Request, Identity)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, code: 200}
 		id, err := h.Identify(r)
+		who := "?"
 		if err != nil {
-			fail(w, err)
-			return
+			fail(sw, err)
+		} else {
+			who = id.Node
+			if id.Local {
+				who = "local"
+			}
+			if id.Login != "" {
+				who += " (" + id.Login + ")"
+			}
+			fn(sw, r, id)
 		}
-		fn(w, r, id)
+		h.Logf("%s %s %s from %s -> %d in %s", r.Method, r.URL.Path, r.URL.RawQuery, who, sw.code, time.Since(start).Round(time.Millisecond))
 	}
 }
 
