@@ -1,0 +1,159 @@
+// Package config reads and writes <home>/config.json (SPEC.md §6).
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+)
+
+const DefaultPort = 7767
+
+// Roles and caller transports.
+const (
+	RoleHub    = "hub"
+	RoleCaller = "caller"
+
+	TransportDirect = "direct" // the host already routes to the tailnet (Muse's built-in connector)
+	TransportTSNet  = "tsnet"  // dial through an embedded tailnet node of our own
+)
+
+type WakeAdapter struct {
+	Type       string   `json:"type"` // "webhook" | "exec"
+	URLFile    string   `json:"url_file,omitempty"`
+	SecretFile string   `json:"secret_file,omitempty"`
+	Argv       []string `json:"argv,omitempty"`
+}
+
+type AgentSpec struct {
+	Node     string       `json:"node,omitempty"`  // tailnet node the agent connects from (short name or FQDN)
+	Local    bool         `json:"local,omitempty"` // lives on the hub machine
+	Wake     *WakeAdapter `json:"wake,omitempty"`
+	WakeMax  string       `json:"wake_max,omitempty"`
+	WakeRate int          `json:"wake_rate,omitempty"`
+}
+
+type TSNet struct {
+	Dir         string `json:"dir,omitempty"`      // state directory; default <home>/tsnet
+	Hostname    string `json:"hostname,omitempty"` // node name on the tailnet; default khoomei-<agent>
+	AuthKeyFile string `json:"auth_key_file,omitempty"`
+}
+
+type Policy struct {
+	Mode string   `json:"mode"`
+	Deny []string `json:"deny"`
+}
+
+type Config struct {
+	Role      string                `json:"role"`
+	Agent     string                `json:"agent,omitempty"`
+	Hub       string                `json:"hub,omitempty"`       // callers: HOST[:PORT] of the hub
+	Transport string                `json:"transport,omitempty"` // callers: direct | tsnet
+	Port      int                   `json:"port,omitempty"`
+	TSNet     TSNet                 `json:"tsnet"`
+	Policy    Policy                `json:"policy"`
+	Agents    map[string]*AgentSpec `json:"agents"`
+
+	Home string `json:"-"`
+	Path string `json:"-"`
+}
+
+// Load reads the config under home, returning defaults when none exists.
+func Load(home string) (*Config, error) {
+	c := &Config{Role: RoleCaller, Transport: TransportDirect, Port: DefaultPort,
+		Policy: Policy{Mode: "tailnet", Deny: []string{}}, Agents: map[string]*AgentSpec{},
+		Home: home, Path: filepath.Join(home, "config.json")}
+	b, err := os.ReadFile(c.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return c, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(b, c); err != nil {
+		return nil, fmt.Errorf("%s: %w", c.Path, err)
+	}
+	if c.Agents == nil {
+		c.Agents = map[string]*AgentSpec{}
+	}
+	if c.Port == 0 {
+		c.Port = DefaultPort
+	}
+	if c.Transport == "" {
+		c.Transport = TransportDirect
+	}
+	return c, nil
+}
+
+// Exists reports whether a config file is present.
+func (c *Config) Exists() bool {
+	_, err := os.Stat(c.Path)
+	return err == nil
+}
+
+// Save writes the config, keeping the previous version as config.json.bak.
+func (c *Config) Save() error {
+	if err := os.MkdirAll(c.Home, 0o700); err != nil {
+		return err
+	}
+	if old, err := os.ReadFile(c.Path); err == nil {
+		_ = os.WriteFile(c.Path+".bak", old, 0o600)
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := c.Path + ".tmp"
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, c.Path)
+}
+
+// Pretty returns the JSON form for printing plans.
+func (c *Config) Pretty() string {
+	b, _ := json.MarshalIndent(c, "", "  ")
+	return string(b)
+}
+
+// HubAddr returns the hub's host:port for callers.
+func (c *Config) HubAddr() (string, error) {
+	if c.Hub == "" {
+		return "", errors.New("no hub configured; run: khoomei setup --hub HOST[:PORT] --agent NAME --apply")
+	}
+	if _, _, err := net.SplitHostPort(c.Hub); err != nil {
+		return net.JoinHostPort(c.Hub, strconv.Itoa(DefaultPort)), nil
+	}
+	return c.Hub, nil
+}
+
+// TSNetDir is the embedded node's state directory.
+func (c *Config) TSNetDir() string {
+	if c.TSNet.Dir != "" {
+		return c.TSNet.Dir
+	}
+	return filepath.Join(c.Home, "tsnet")
+}
+
+// TSNetHostname is the embedded node's name on the tailnet.
+func (c *Config) TSNetHostname() string {
+	if c.TSNet.Hostname != "" {
+		return c.TSNet.Hostname
+	}
+	if c.Role == RoleHub {
+		return "khoomei-hub"
+	}
+	return "khoomei-" + c.Agent
+}
+
+// Spec returns the agent's spec, creating an empty one if absent.
+func (c *Config) Spec(agent string) *AgentSpec {
+	if c.Agents[agent] == nil {
+		c.Agents[agent] = &AgentSpec{}
+	}
+	return c.Agents[agent]
+}

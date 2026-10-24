@@ -1,6 +1,6 @@
 # khoomei 协议 v1
 
-hub 是一个 HTTP 服务，监听在自己的 Tailscale IP（默认端口 7767）和 `127.0.0.1`。caller 只发出连接。所有请求和响应都是 JSON。
+hub 是一个 HTTP 服务，由内嵌的 tailnet 节点（tsnet）监听，默认端口 7767，同时在 `127.0.0.1` 给本机 CLI 用。caller 只发出连接：要么宿主已把 tailnet 路由好（Muse），要么自己也用内嵌节点拨出去。所有请求和响应都是 JSON。
 
 ## 1. 身份
 
@@ -9,17 +9,17 @@ hub 是一个 HTTP 服务，监听在自己的 Tailscale IP（默认端口 7767�
 | 来源 | 身份 | 权限 |
 |---|---|---|
 | `127.0.0.1` / `::1` | `local`（hub 所有者） | 以任何**本机** agent（`local: true` 或无 `node` 绑定）的名字操作；不能冒充有 `node` 绑定的远端 agent |
-| `100.64.0.0/10`、`fd7a:115c:a1e0::/48` | `peer`，节点名来自 `tailscale whois --json <ip>` | 只能以绑定到该节点的 agent 的名字操作 |
+| `100.64.0.0/10`、`fd7a:115c:a1e0::/48` | `peer`，节点名来自内嵌节点的 `WhoIs(ip)` | 只能以绑定到该节点的 agent 的名字操作 |
 | 其他 | 拒绝 | 403 |
 
-`whois` 超时或 `tailscaled` 不可用 → 503 `{"code":"identity_unavailable"}` + `Retry-After: 1`，客户端退避重试。查到节点但 `policy.deny` 命中 → 403。
+`WhoIs` 超时或节点暂不可用 → 503 `{"code":"identity_unavailable"}` + `Retry-After: 1`，客户端退避重试。查到节点但 `policy.deny` 命中 → 403。
 
-节点匹配规则：配置里的 `node` 可以是短名或 FQDN；`whois` 返回 FQDN（去掉末尾的点）。短名等于 FQDN 第一段即匹配。
+节点匹配规则：配置里的 `node` 可以是短名或 FQDN；`WhoIs` 返回 FQDN（去掉末尾的点）。短名等于 FQDN 第一段即匹配。
 
 ## 2. 接口
 
 ### `GET /health`
-不鉴权。`{"ok":true,"v":1,"version":"0.1.0"}`
+不鉴权。`{"ok":true,"v":1,"version":"0.2.0"}`
 
 ### `POST /msg`
 Body 是一封信封（§3），上限 256 KiB，`Content-Type: application/json`。
@@ -103,7 +103,7 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
   acked/<agent>/<id>.json
 ```
 
-`peer` 以 `whois` 结果为准，不信信封。第一版不自动清理 `acked/`。
+`peer` 以 `WhoIs` 结果为准，不信信封；hub 所有者发出的记为 `hub`。第一版不自动清理 `acked/`。
 
 ## 6. 配置
 
@@ -111,9 +111,8 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 {
   "role": "hub",
   "agent": "grok",
-  "listen": "auto",
   "port": 7767,
-  "tailscale_cmd": "tailscale",
+  "tsnet": {"dir": "…/tsnet", "hostname": "khoomei-hub", "auth_key_file": "…"},
   "policy": {"mode": "tailnet", "deny": []},
   "agents": {
     "grok": {"local": true,
@@ -124,8 +123,8 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 }
 ```
 
-caller 端：`{"role":"caller","agent":"muse","hub":"grok-box.tail1234.ts.net:7767"}`。
+caller 端：`{"role":"caller","agent":"muse","hub":"khoomei-hub:7767","transport":"direct"}`；`transport` 为 `tsnet` 时另有自己的 `tsnet` 块，拨号走内嵌节点。
 
 ## 7. 刻意不做
 
-文件传输、请求生命周期状态、hub 之间互联、OAuth、任何公网暴露。信封留了 `kind` 和 `data` 给上层约定，没留别的扩展口。
+文件传输、请求生命周期状态、hub 之间互联、OAuth、任何公网暴露、对系统 tailscaled 的依赖。信封留了 `kind` 和 `data` 给上层约定，没留别的扩展口。

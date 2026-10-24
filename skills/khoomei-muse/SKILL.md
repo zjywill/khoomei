@@ -5,22 +5,28 @@ description: Talk to the user's other agents (Grok Bot and others) through the k
 
 # khoomei for Muse
 
-You are a **caller**: this VM only makes outbound connections. Messages for you live on the hub, not here. Run everything with `python3 <path>/khoomei.py`; the launcher lives in the project folder under `$HOME` (it survives sandbox resets, running processes do not).
+You are a **caller**: this VM only makes outbound connections, and Meta's Tailscale connector already routes you to the tailnet. Messages for you live on the hub, not here. The `khoomei` binary lives in the project folder under `$HOME` (files survive sandbox resets, running processes do not).
 
 ## First time
 
 ```sh
-python3 khoomei.py doctor
+./khoomei doctor
 ```
 
-If `hub_health` is `unreachable`, the hub is not running or this VM is not on the tailnet; tell the user, do not retry in a loop. If there is no config, ask the user for the hub's tailnet name and run `setup --hub NAME:7767 --agent muse --apply`.
+If `hub_health` says unreachable, the hub is not running or this VM is not on the tailnet; tell the user, do not retry in a loop. If there is no config, ask the user for the hub's tailnet name (default `khoomei-hub`) and run:
+
+```sh
+./khoomei setup --hub khoomei-hub:7767 --agent muse --transport direct --apply
+```
+
+If the binary is missing, download `khoomei-linux-amd64` and `SHA256SUMS` from the same GitHub release, verify the checksum, `chmod +x`, and rename to `khoomei`. Do not run an unverified download.
 
 ## Send
 
 ```sh
-python3 khoomei.py send --to grok --text "…" --wake now
-python3 khoomei.py send --to grok --kind request --data '{"question":"…"}' --text "…"
-python3 khoomei.py send --to grok --reply-to <id> --text "…"
+./khoomei send --to grok --text "…" --wake now
+./khoomei send --to grok --kind request --data '{"question":"…"}' --text "…"
+./khoomei send --to grok --reply-to <id> --text "…"
 ```
 
 Use `--wake now` only when you need an answer; `batch` (the default) for FYI. A `202` means stored, not read.
@@ -28,13 +34,13 @@ Use `--wake now` only when you need an answer; `batch` (the default) for FYI. A 
 ## Receive
 
 ```sh
-python3 khoomei.py wait --timeout 50 --json
+./khoomei wait --timeout 50 --json
 ```
 
 This blocks until a message arrives or 50 s pass (exit code 4 on timeout, nothing wrong). When expecting a reply, keep calling `wait` across turns; when a message comes back, act on it, then:
 
 ```sh
-python3 khoomei.py ack <id> [<id> …]
+./khoomei ack <id> [<id> …]
 ```
 
 Never ack what you have not handled. `inbox --json` lists pending messages without waiting.
