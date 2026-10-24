@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -76,9 +77,12 @@ func (w *Waker) Wake(env *protocol.Envelope) {
 		return
 	}
 	go func() {
+		start := time.Now()
 		if err := w.fire(spec.Wake, env); err != nil {
 			w.logf("wake %s failed: %v", env.ToAgent, err)
+			return
 		}
+		w.logf("wake %s via %s ok in %s (msg %s)", env.ToAgent, spec.Wake.Type, time.Since(start).Round(time.Millisecond), env.ID)
 	}()
 }
 
@@ -126,6 +130,9 @@ func (w *Waker) fire(a *config.WakeAdapter, env *protocol.Envelope) error {
 			return err
 		}
 		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			return fmt.Errorf("webhook returned %d", resp.StatusCode)
+		}
 		return nil
 	}
 	return nil
