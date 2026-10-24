@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/http/httpproxy"
+
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
@@ -39,10 +41,16 @@ type Response struct {
 
 // New returns a client. Connections are not reused: the path to a hub often runs through a DERP
 // relay or a sandbox proxy that silently drops idle connections, and a reused dead connection
-// surfaces as EOF on the next call.
+// surfaces as EOF on the next call. The default transport honours HTTP(S)_PROXY / NO_PROXY, which
+// sandboxes such as Muse's rely on to reach the tailnet at all.
 func New(base string, hc *http.Client) *Client {
 	if hc == nil {
-		hc = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+		// httpproxy reads the environment now; http.ProxyFromEnvironment caches it once per process.
+		proxy := httpproxy.FromEnvironment().ProxyFunc()
+		hc = &http.Client{Transport: &http.Transport{
+			Proxy:             func(r *http.Request) (*url.URL, error) { return proxy(r.URL) },
+			DisableKeepAlives: true,
+		}}
 	} else if t, ok := hc.Transport.(*http.Transport); ok {
 		t.DisableKeepAlives = true
 	}

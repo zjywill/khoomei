@@ -35,7 +35,7 @@ agent 用 **`owner/agent`** 两层地址寻址：`junyi/grok`、`alice/muse`。�
 ## 2. 接口
 
 ### `GET /health`
-不鉴权。`{"ok":true,"v":1,"version":"0.3.1","owner":"junyi"}`
+不鉴权。`{"ok":true,"v":1,"version":"0.3.2","owner":"junyi"}`
 
 ### `POST /msg`
 Body 是一封信封（§3），上限 256 KiB，`Content-Type: application/json`。

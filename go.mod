@@ -2,7 +2,10 @@ module github.com/zjywill/khoomei
 
 go 1.27.3
 
-require tailscale.com v1.104.2
+require (
+	golang.org/x/net v0.59.0
+	tailscale.com v1.104.2
+)
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
@@ -38,7 +41,6 @@ require (
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
-	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect

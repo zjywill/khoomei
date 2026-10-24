@@ -63,3 +63,24 @@ func TestTransientClassification(t *testing.T) {
 type errConnRefused struct{}
 
 func (errConnRefused) Error() string { return "connection refused" }
+
+// The default transport must route through HTTP_PROXY: Muse's sandbox allows the tailnet only that way.
+func TestDefaultTransportHonoursProxyEnv(t *testing.T) {
+	proxied := make(chan string, 1)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied <- r.Host
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer proxy.Close()
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+	c := New("http://100.118.108.64:7767", nil)
+	resp, err := c.Health(context.Background())
+	if err != nil || !resp.OK {
+		t.Fatalf("via proxy: %v %+v", err, resp)
+	}
+	if got := <-proxied; got != "100.118.108.64:7767" {
+		t.Fatalf("proxy saw host %q", got)
+	}
+}
