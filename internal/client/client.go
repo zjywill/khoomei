@@ -111,7 +111,8 @@ func transient(err error) bool {
 }
 
 func (c *Client) Health(ctx context.Context) (*Response, error) {
-	return c.call(ctx, http.MethodGet, "/health", nil, 5*time.Second)
+	// 30s: a sandbox such as Muse's may hold the first connection to a host until the user approves it.
+	return c.call(ctx, http.MethodGet, "/health", nil, 30*time.Second)
 }
 
 func (c *Client) Send(ctx context.Context, env *protocol.Envelope) (*Response, error) {
