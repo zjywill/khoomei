@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/zjywill/khoomei/internal/protocol"
 )
 
 const DefaultPort = 7767
@@ -37,26 +39,33 @@ type AgentSpec struct {
 	WakeRate int          `json:"wake_rate,omitempty"`
 }
 
+// OwnerSpec binds an owner handle to a Tailscale login (alice@github, bob@example.com).
+type OwnerSpec struct {
+	Login string `json:"login"`
+}
+
 type TSNet struct {
 	Dir         string `json:"dir,omitempty"`      // state directory; default <home>/tsnet
-	Hostname    string `json:"hostname,omitempty"` // node name on the tailnet; default khoomei-<agent>
+	Hostname    string `json:"hostname,omitempty"` // node name on the tailnet; default khoomei-<owner>[-<agent>]
 	AuthKeyFile string `json:"auth_key_file,omitempty"`
 }
 
 type Policy struct {
 	Mode string   `json:"mode"`
-	Deny []string `json:"deny"`
+	Deny []string `json:"deny"` // node names, short names or logins
 }
 
 type Config struct {
 	Role      string                `json:"role"`
+	Owner     string                `json:"owner,omitempty"` // this machine's owner handle; bare names qualify to it
 	Agent     string                `json:"agent,omitempty"`
 	Hub       string                `json:"hub,omitempty"`       // callers: HOST[:PORT] of the hub
 	Transport string                `json:"transport,omitempty"` // callers: direct | tsnet
 	Port      int                   `json:"port,omitempty"`
 	TSNet     TSNet                 `json:"tsnet"`
 	Policy    Policy                `json:"policy"`
-	Agents    map[string]*AgentSpec `json:"agents"`
+	Owners    map[string]*OwnerSpec `json:"owners,omitempty"` // hub: other people whose agents may connect
+	Agents    map[string]*AgentSpec `json:"agents"`           // hub: keyed by full address once Owner is set
 
 	Home string `json:"-"`
 	Path string `json:"-"`
@@ -86,7 +95,21 @@ func Load(home string) (*Config, error) {
 	if c.Transport == "" {
 		c.Transport = TransportDirect
 	}
+	c.normalize()
 	return c, nil
+}
+
+// normalize rewrites bare agent keys to owner-qualified ones once an owner handle exists.
+func (c *Config) normalize() {
+	if c.Owner == "" {
+		return
+	}
+	for k, v := range c.Agents {
+		if q := protocol.Qualify(k, c.Owner); q != k {
+			delete(c.Agents, k)
+			c.Agents[q] = v
+		}
+	}
 }
 
 // Exists reports whether a config file is present.
@@ -97,6 +120,7 @@ func (c *Config) Exists() bool {
 
 // Save writes the config, keeping the previous version as config.json.bak.
 func (c *Config) Save() error {
+	c.normalize()
 	if err := os.MkdirAll(c.Home, 0o700); err != nil {
 		return err
 	}
@@ -131,6 +155,11 @@ func (c *Config) HubAddr() (string, error) {
 	return c.Hub, nil
 }
 
+// SelfAddress is this machine's own agent address: owner/agent when an owner handle is set.
+func (c *Config) SelfAddress() string {
+	return protocol.Qualify(c.Agent, c.Owner)
+}
+
 // TSNetDir is the embedded node's state directory.
 func (c *Config) TSNetDir() string {
 	if c.TSNet.Dir != "" {
@@ -139,21 +168,33 @@ func (c *Config) TSNetDir() string {
 	return filepath.Join(c.Home, "tsnet")
 }
 
-// TSNetHostname is the embedded node's name on the tailnet.
+// TSNetHostname is the embedded node's name on the tailnet: khoomei-<owner> for a hub,
+// khoomei-<owner>-<agent> for a caller; "hub" stands in for a missing owner.
 func (c *Config) TSNetHostname() string {
 	if c.TSNet.Hostname != "" {
 		return c.TSNet.Hostname
 	}
-	if c.Role == RoleHub {
-		return "khoomei-hub"
+	owner := c.Owner
+	if owner == "" {
+		owner = "hub"
 	}
-	return "khoomei-" + c.Agent
+	if c.Role == RoleHub {
+		return "khoomei-" + owner
+	}
+	return "khoomei-" + owner + "-" + c.Agent
 }
 
-// Spec returns the agent's spec, creating an empty one if absent.
-func (c *Config) Spec(agent string) *AgentSpec {
-	if c.Agents[agent] == nil {
-		c.Agents[agent] = &AgentSpec{}
+// Spec returns the agent's spec by full address, creating an empty one if absent.
+func (c *Config) Spec(addr string) *AgentSpec {
+	addr = protocol.Qualify(addr, c.Owner)
+	if c.Agents[addr] == nil {
+		c.Agents[addr] = &AgentSpec{}
 	}
-	return c.Agents[agent]
+	return c.Agents[addr]
+}
+
+// Lookup finds an agent by bare or qualified address.
+func (c *Config) Lookup(addr string) (*AgentSpec, bool) {
+	s, ok := c.Agents[protocol.Qualify(addr, c.Owner)]
+	return s, ok
 }

@@ -47,9 +47,10 @@ type Envelope struct {
 
 // Received is what the hub records next to a stored envelope.
 type Received struct {
-	At   string `json:"at"`
-	Seq  int64  `json:"seq"` // orders messages that land within the same second of At
-	Peer string `json:"peer"`
+	At    string `json:"at"`
+	Seq   int64  `json:"seq"` // orders messages that land within the same second of At
+	Peer  string `json:"peer"`
+	Login string `json:"login,omitempty"` // Tailscale login of the sending node, when known
 }
 
 // Record is the stored form: inbox/<agent>/<id>.json.
@@ -84,9 +85,9 @@ func (e *Envelope) Validate() error {
 		return fmt.Errorf("v must be %d", Version)
 	case !idRe.MatchString(e.ID):
 		return errors.New("bad id")
-	case !ValidAgent(e.FromAgent):
+	case !ValidAddress(e.FromAgent):
 		return errors.New("bad from_agent")
-	case !ValidAgent(e.ToAgent):
+	case !ValidAddress(e.ToAgent):
 		return errors.New("bad to_agent")
 	case !tsRe.MatchString(e.TS):
 		return errors.New("bad ts")
@@ -116,13 +117,14 @@ func (e *Envelope) RequestedWake() string {
 	return e.Wake
 }
 
-// ValidAgent: 1–64 characters, any Unicode, no "/" or control characters, no leading or trailing space.
+// ValidAgent: one name part (an agent or an owner handle): 1–64 characters, any Unicode, no "/" or
+// control characters, no leading or trailing space, and not "." or ".." (names become directories).
 func ValidAgent(name string) bool {
 	n := len([]rune(name))
 	if n < 1 || n > 64 {
 		return false
 	}
-	if strings.TrimSpace(name) != name {
+	if strings.TrimSpace(name) != name || name == "." || name == ".." {
 		return false
 	}
 	for _, r := range name {
@@ -131,6 +133,34 @@ func ValidAgent(name string) bool {
 		}
 	}
 	return true
+}
+
+// ValidAddress accepts "agent" or "owner/agent", each part a valid name.
+func ValidAddress(addr string) bool {
+	owner, agent, ok := SplitAddress(addr)
+	return ok && (owner == "" || ValidAgent(owner)) && ValidAgent(agent)
+}
+
+// SplitAddress separates "owner/agent" into its parts; owner is "" for a bare agent name.
+// ok is false when there is more than one slash or an empty part around it.
+func SplitAddress(addr string) (owner, agent string, ok bool) {
+	i := strings.IndexByte(addr, '/')
+	if i < 0 {
+		return "", addr, true
+	}
+	owner, agent = addr[:i], addr[i+1:]
+	if owner == "" || agent == "" || strings.Contains(agent, "/") {
+		return "", "", false
+	}
+	return owner, agent, true
+}
+
+// Qualify prefixes a bare agent name with owner; a full address and an empty owner pass through.
+func Qualify(addr, owner string) string {
+	if owner == "" || strings.Contains(addr, "/") {
+		return addr
+	}
+	return owner + "/" + addr
 }
 
 // ValidID reports whether s is a well-formed message id.

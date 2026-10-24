@@ -17,22 +17,29 @@ import (
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 var (
 	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
 	tailnetV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
 )
 
-// Identity is who a connection is: the hub's own loopback, or a tailnet node.
+// Identity is who a connection is: the hub's own loopback, or a tailnet node and the login it belongs to.
 type Identity struct {
 	Local bool
 	Node  string // FQDN without trailing dot; empty for Local
+	Login string // Tailscale login of the node's owner (alice@github); empty when unknown
 }
 
-// Resolver turns a tailnet address into a node name (tsnet's WhoIs in production).
+// Peer is what a Resolver learns about a tailnet address.
+type Peer struct {
+	Node  string
+	Login string
+}
+
+// Resolver turns a tailnet address into its node and login (tsnet's WhoIs in production).
 type Resolver interface {
-	Resolve(ctx context.Context, ip netip.Addr) (node string, err error)
+	Resolve(ctx context.Context, ip netip.Addr) (Peer, error)
 }
 
 // ErrUnavailable means identity lookup is temporarily impossible (503 + Retry-After).
@@ -84,20 +91,20 @@ func (h *Hub) identifyRemote(r *http.Request) (Identity, error) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	node, err := h.Resolver.Resolve(ctx, ip)
+	peer, err := h.Resolver.Resolve(ctx, ip)
 	if err != nil {
 		if errors.Is(err, ErrUnavailable) || errors.Is(err, context.DeadlineExceeded) {
 			return Identity{}, ErrUnavailable
 		}
 		return Identity{}, ForbiddenError("unknown peer")
 	}
-	node = strings.TrimSuffix(node, ".")
+	id := Identity{Node: strings.TrimSuffix(peer.Node, "."), Login: strings.ToLower(peer.Login)}
 	for _, rule := range h.Cfg.Policy.Deny {
-		if nodeMatches(rule, node) {
+		if nodeMatches(rule, id.Node) || (id.Login != "" && strings.EqualFold(rule, id.Login)) {
 			return Identity{}, ForbiddenError("denied by policy")
 		}
 	}
-	return Identity{Node: node}, nil
+	return id, nil
 }
 
 // nodeMatches: a bound name may be the short host name or the FQDN.
@@ -106,33 +113,55 @@ func nodeMatches(bound, node string) bool {
 	return bound == node || bound == strings.SplitN(node, ".", 2)[0] || strings.HasPrefix(node, bound+".")
 }
 
-// Authorize: may this identity act as agent? Loopback may act as any local agent; a peer only as
-// agents bound to its node. Nobody may act as an unregistered agent except the owner on their own hub.
-func (h *Hub) Authorize(id Identity, agent string) error {
-	spec := h.Cfg.Agents[agent]
+// Qualify resolves a bare agent name to the hub owner's handle.
+func (h *Hub) Qualify(addr string) string { return protocol.Qualify(addr, h.Cfg.Owner) }
+
+// Authorize: may this identity act as addr (SPEC §1)?
+//   - Loopback (the hub owner) may act as any of the owner's local agents, never as a remote one.
+//   - A peer may act only as an agent bound to its node, and when that agent belongs to an owner with a
+//     registered login, the node's login must match. Agents of other owners always need such a login.
+func (h *Hub) Authorize(id Identity, addr string) error {
+	addr = h.Qualify(addr)
+	owner, _, _ := protocol.SplitAddress(addr)
+	spec := h.Cfg.Agents[addr]
 	if id.Local {
+		if owner != h.Cfg.Owner {
+			return ForbiddenError(fmt.Sprintf("%s belongs to %s, not to this hub's owner", addr, owner))
+		}
 		if spec == nil || spec.Local || spec.Node == "" {
 			return nil
 		}
-		return ForbiddenError(fmt.Sprintf("%s is bound to node %s, not to this hub", agent, spec.Node))
+		return ForbiddenError(fmt.Sprintf("%s is bound to node %s, not to this hub", addr, spec.Node))
 	}
 	if spec == nil {
-		return ForbiddenError(fmt.Sprintf("unknown agent %s; the hub owner must register it", agent))
+		return ForbiddenError(fmt.Sprintf("unknown agent %s; the hub owner must register it", addr))
 	}
 	if spec.Node == "" {
-		return ForbiddenError(fmt.Sprintf("%s has no node binding", agent))
+		return ForbiddenError(fmt.Sprintf("%s has no node binding", addr))
 	}
 	if !nodeMatches(spec.Node, id.Node) {
-		return ForbiddenError(fmt.Sprintf("%s is bound to %s, not %s", agent, spec.Node, id.Node))
+		return ForbiddenError(fmt.Sprintf("%s is bound to %s, not %s", addr, spec.Node, id.Node))
+	}
+	wantLogin := ""
+	if o := h.Cfg.Owners[owner]; o != nil {
+		wantLogin = strings.ToLower(o.Login)
+	}
+	if owner != h.Cfg.Owner && wantLogin == "" {
+		return ForbiddenError(fmt.Sprintf("owner %s has no registered login", owner))
+	}
+	if wantLogin != "" && id.Login != wantLogin {
+		return ForbiddenError(fmt.Sprintf("%s belongs to %s, but the node is logged in as %q", addr, owner, id.Login))
 	}
 	return nil
 }
 
-// Receive validates, authorizes and stores an envelope, then wakes the recipient. fresh is false on a duplicate id.
+// Receive validates, authorizes and stores an envelope, then wakes the recipient. Bare names in the
+// envelope are qualified to the hub owner before anything else. fresh is false on a duplicate id.
 func (h *Hub) Receive(id Identity, env *protocol.Envelope) (fresh bool, err error) {
 	if err := env.Validate(); err != nil {
 		return false, BadRequestError(err.Error())
 	}
+	env.FromAgent, env.ToAgent = h.Qualify(env.FromAgent), h.Qualify(env.ToAgent)
 	if err := h.Authorize(id, env.FromAgent); err != nil {
 		return false, err
 	}
@@ -143,7 +172,7 @@ func (h *Hub) Receive(id Identity, env *protocol.Envelope) (fresh bool, err erro
 	if id.Local {
 		peer = "hub"
 	}
-	fresh, err = h.Box.Store(env, peer)
+	fresh, err = h.Box.Store(env, peer, id.Login)
 	if err != nil {
 		return false, err
 	}
@@ -158,7 +187,7 @@ func (h *Hub) Receive(id Identity, env *protocol.Envelope) (fresh bool, err erro
 func (h *Hub) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "v": protocol.Version, "version": Version})
+		writeJSON(w, 200, map[string]any{"ok": true, "v": protocol.Version, "version": Version, "owner": h.Cfg.Owner})
 	})
 	mux.HandleFunc("POST /msg", h.withIdentity(h.handleMsg))
 	mux.HandleFunc("GET /inbox", h.withIdentity(h.handleInbox))
@@ -169,7 +198,7 @@ func (h *Hub) Handler() http.Handler {
 			fail(w, ForbiddenError("owner only"))
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "agents": h.Cfg.Agents})
+		writeJSON(w, 200, map[string]any{"ok": true, "owner": h.Cfg.Owner, "owners": h.Cfg.Owners, "agents": h.Cfg.Agents})
 	}))
 	return mux
 }
@@ -208,15 +237,16 @@ func (h *Hub) handleMsg(w http.ResponseWriter, r *http.Request, id Identity) {
 	if fresh {
 		code = 202
 	}
-	writeJSON(w, code, map[string]any{"ok": true, "id": env.ID, "duplicate": !fresh})
+	writeJSON(w, code, map[string]any{"ok": true, "id": env.ID, "duplicate": !fresh, "to_agent": env.ToAgent})
 }
 
 func (h *Hub) handleInbox(w http.ResponseWriter, r *http.Request, id Identity) {
 	agent := r.URL.Query().Get("agent")
-	if !protocol.ValidAgent(agent) {
+	if !protocol.ValidAddress(agent) {
 		fail(w, BadRequestError("bad agent"))
 		return
 	}
+	agent = h.Qualify(agent)
 	if err := h.Authorize(id, agent); err != nil {
 		fail(w, err)
 		return
@@ -245,7 +275,7 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request, id Identity) {
 		Agent string   `json:"agent"`
 		IDs   []string `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !protocol.ValidAgent(body.Agent) || len(body.IDs) == 0 {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !protocol.ValidAddress(body.Agent) || len(body.IDs) == 0 {
 		fail(w, BadRequestError("bad agent or ids"))
 		return
 	}
@@ -255,11 +285,12 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request, id Identity) {
 			return
 		}
 	}
-	if err := h.Authorize(id, body.Agent); err != nil {
+	agent := h.Qualify(body.Agent)
+	if err := h.Authorize(id, agent); err != nil {
 		fail(w, err)
 		return
 	}
-	done, err := h.Box.Ack(body.Agent, body.IDs)
+	done, err := h.Box.Ack(agent, body.IDs)
 	if err != nil {
 		fail(w, err)
 		return

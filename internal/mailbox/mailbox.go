@@ -1,4 +1,5 @@
-// Package mailbox stores records as inbox/<agent>/<id>.json and acked/<agent>/<id>.json (SPEC.md §5).
+// Package mailbox stores records as inbox/<owner>/<agent>/<id>.json and acked/<owner>/<agent>/<id>.json
+// (SPEC.md §5); a bare agent address simply has no owner directory.
 package mailbox
 
 import (
@@ -24,7 +25,10 @@ func New(home string) *Mailbox {
 	return &Mailbox{home: home, wake: make(chan struct{})}
 }
 
-func (m *Mailbox) dir(kind, agent string) string { return filepath.Join(m.home, kind, agent) }
+// dir maps an address to a directory; address parts are validated names, so the slash is the only separator.
+func (m *Mailbox) dir(kind, agent string) string {
+	return filepath.Join(m.home, kind, filepath.FromSlash(agent))
+}
 
 func (m *Mailbox) exists(agent, id string) bool {
 	for _, k := range []string{"inbox", "acked"} {
@@ -36,13 +40,13 @@ func (m *Mailbox) exists(agent, id string) bool {
 }
 
 // Store writes the envelope into the recipient's inbox. It returns false when the id was already seen.
-func (m *Mailbox) Store(env *protocol.Envelope, peer string) (bool, error) {
+func (m *Mailbox) Store(env *protocol.Envelope, peer, login string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.exists(env.ToAgent, env.ID) {
 		return false, nil
 	}
-	rec := protocol.Record{Envelope: *env, Received: protocol.Received{At: protocol.Now(), Seq: time.Now().UnixNano(), Peer: peer}}
+	rec := protocol.Record{Envelope: *env, Received: protocol.Received{At: protocol.Now(), Seq: time.Now().UnixNano(), Peer: peer, Login: login}}
 	if err := writeJSON(filepath.Join(m.dir("inbox", env.ToAgent), env.ID+".json"), rec); err != nil {
 		return false, err
 	}

@@ -14,12 +14,12 @@ Pick one agent name per tool so replies come back to the right session, e.g. `cl
 
 ```sh
 # machine already on Tailscale → direct; otherwise → tsnet with an auth key the user wrote to a file
-khoomei setup --hub khoomei-hub:7767 --agent claude --transport direct --apply
+khoomei setup --hub khoomei-<owner>:7767 --owner <owner handle> --agent claude --transport direct --apply
 khoomei doctor
 ```
 
 The hub owner must register this name and node: `khoomei agent claude --node <this machine's tailnet name>`.
-With `--transport tsnet` the node name is `khoomei-claude`.
+With `--transport tsnet` the node name is `khoomei-<owner>-claude`. If this computer belongs to a friend of the hub owner, the hub owner registers `khoomei owner <handle> --login <tailscale login>` first and the agent as `<handle>/claude`.
 
 Register the MCP server (same binary, stdio, no ports):
 
@@ -55,3 +55,4 @@ khoomei ack --as claude <id> [<id> …]
 - `202` means stored, not read. Only a reply tells you anything happened.
 - Ack only what you have handled.
 - Keep credentials, auth keys and private files out of messages.
+- Addresses are `owner/agent`; a bare name means the hub owner's agent.

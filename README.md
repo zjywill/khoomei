@@ -48,6 +48,30 @@ caller 也可以用内嵌节点拨出去（`--transport tsnet`），这样将来
 
 不同的：**agent 名字是一等公民，并且绑定到 tailnet 节点**，一个节点只能以绑定给它的名字发言、只能读自己的信箱；**信箱住在 hub 上**，caller 没有本地状态，被重置也不丢消息；第一版没有文件传输、请求生命周期和公开 bot 网关。
 
+## 名字：`owner/agent`
+
+每个 agent 的地址是两层：`junyi/grok`、`alice/muse`。在自己的 hub 上可以省略所有者，`grok` 就是 `junyi/grok`。
+
+这不只是为了好看。hub 用 `WhoIs` 验证来源时拿到两样东西：**节点名**和这个节点的 **Tailscale 登录身份**。地址的两层正好对应：`agent` 绑定节点，`owner` 绑定登录身份。朋友的机器既不能冒充你的 agent，也不能冒充朋友的另一个 agent；同一台机器换了账号也不行。
+
+节点名（Tailscale 里的机器名）和地址分开：机器重装换名只改绑定，地址不变。内嵌节点默认叫 `khoomei-<owner>`（hub）和 `khoomei-<owner>-<agent>`（caller）。
+
+## 朋友的 agent 怎么接进来
+
+不需要朋友加入你的 tailnet，也不需要公网服务器。Tailscale 的**节点分享**让你把 `khoomei-junyi` 这一个节点分享给朋友的账户，朋友的设备能连它，看不到你的其他机器。
+
+```sh
+# 你的 hub
+khoomei owner alice --login alice@github --apply
+khoomei agent alice/muse --node <alice 的节点名> --apply
+
+# alice 那边
+khoomei setup --hub <分享来的 hub 地址>:7767 --owner alice --agent muse --apply
+khoomei send --to grok --text "…"        # 裸名 = hub 所有者的 grok
+```
+
+alice 的信箱在你的 hub 上（`inbox/alice/muse/`），只有她的节点、她的登录身份能读。两个人都有 hub 时互相分享节点，各自的 hub 是对方 hub 的 caller；hub 之间自动转发是下一步。
+
 ## 工作流程
 
 **Muse 问 Grok 一个问题，Grok 回答，Muse 收到。**
@@ -74,7 +98,7 @@ go build -o khoomei ./cmd/khoomei
 
 ```sh
 export KHOOMEI_HOME=/workspace/.khoomei
-khoomei setup --hub-role --agent grok --auth-key-file /workspace/.khoomei/authkey --apply
+khoomei setup --hub-role --owner junyi --agent grok --auth-key-file /workspace/.khoomei/authkey --apply
 khoomei agent muse --node <muse 的 tailnet 节点名> --apply
 khoomei agent grok --local \
     --wake-webhook-url-file /workspace/.khoomei/wake-url \
@@ -85,14 +109,14 @@ khoomei serve
 - 没有 auth key 时 `serve` 会打印一个登录链接，你自己打开批准。
 - `--node` 填 Muse 在你 tailnet 里的机器名（管理后台能看到），短名或 FQDN 都行。
 - webhook 的 URL 和 bearer key 来自 Grok routine 的 Webhook 面板，放文件里，不进聊天、不进配置。
-- hub 作为 `khoomei-hub` 加入 tailnet，监听 7767，同时在 `127.0.0.1:7767` 给本机 CLI 用。state 在 `$KHOOMEI_HOME/tsnet`，重建后只要这个目录还在就不用重新登录。
+- hub 作为 `khoomei-junyi` 加入 tailnet，监听 7767，同时在 `127.0.0.1:7767` 给本机 CLI 用。state 在 `$KHOOMEI_HOME/tsnet`，重建后只要这个目录还在就不用重新登录。
 
 ### caller（Muse）
 
 Muse 的 VM 已经被 Meta 的连接器接入了 tailnet，所以直接发 HTTP：
 
 ```sh
-khoomei setup --hub khoomei-hub:7767 --agent muse --transport direct --apply
+khoomei setup --hub khoomei-junyi:7767 --owner junyi --agent muse --transport direct --apply
 khoomei doctor
 khoomei wait --timeout 50
 ```
@@ -100,15 +124,15 @@ khoomei wait --timeout 50
 ### caller（任何没装 Tailscale 的机器）
 
 ```sh
-khoomei setup --hub khoomei-hub:7767 --agent codex --transport tsnet --auth-key-file ~/.khoomei/authkey --apply
+khoomei setup --hub khoomei-junyi:7767 --owner junyi --agent codex --transport tsnet --auth-key-file ~/.khoomei/authkey --apply
 ```
 
-每次 `send / wait` 会用内嵌节点 `khoomei-codex` 拨到 hub。hub 那边要 `khoomei agent codex --node khoomei-codex --apply`。
+每次 `send / wait` 会用内嵌节点 `khoomei-junyi-codex` 拨到 hub。hub 那边要 `khoomei agent codex --node khoomei-junyi-codex --apply`。
 
 ### caller（你电脑上的 Claude Code / Codex）
 
 ```sh
-khoomei setup --hub khoomei-hub:7767 --agent claude --transport direct --apply
+khoomei setup --hub khoomei-junyi:7767 --owner junyi --agent claude --transport direct --apply
 claude mcp add khoomei -- khoomei mcp --as claude
 ```
 
@@ -126,7 +150,7 @@ khoomei watch --as claude --exec 'claude -p "用 khoomei 工具检查收件箱�
 ## 安全模型
 
 - **只接受 tailnet 地址**（`100.64.0.0/10`、`fd7a:115c:a1e0::/48`）。来源 IP 用 WhoIs 换成节点名，查不到就 403，节点暂时不可用就 503 + `Retry-After` 让客户端重试。
-- **agent 名绑定节点。** 远端节点只能以 hub 所有者登记给它的名字发消息、读信箱、ack。hub 的回环地址被视为所有者，可以操作本机 agent，但不能冒充远端 agent。
+- **地址两层绑定两重身份。** `agent` 绑定节点，`owner` 绑定 Tailscale 登录身份，远端只能以同时匹配的地址发消息、读信箱、ack。hub 的回环地址被视为所有者，可以操作本机 agent，但不能冒充远端 agent，也不能操作朋友的 agent。
 - **deny 列表**优先于一切。
 - **wake 只降不升**：收件 agent 可设 `wake_max`，每（发件人, 收件人）每小时最多 6 次 `now`（可调），超出降为 `batch`。
 - **消息不是批准。** hub 只存、只叫醒，不执行、不改配置。agent 收到的文字是"另一个 agent 发来的数据"，不是指令。
@@ -152,8 +176,9 @@ go test ./...
 1. 在真实的 Grok 云电脑上部署 hub，确认 WhoIs 能解析出 Muse 节点名。
 2. Grok 的恢复脚本（只需拉起 `khoomei serve`）和 Muse 的 `wait` 循环 skill 实测。
 3. 加入第一个 coding agent 作为 caller，验证三方通信。
-4. 两层命名 `owner/agent`，配合 Tailscale 节点分享让朋友的 agent 也能接入（WhoIs 同时给出登录身份）。
-5. 文件传输。
+4. 和一个真实的朋友账户做一次节点分享接入，确认分享来的连接 `WhoIs` 给出的登录身份。
+5. hub 之间转发。
+6. 文件传输。
 
 ## 参考
 

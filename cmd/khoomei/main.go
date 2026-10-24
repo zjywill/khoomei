@@ -38,7 +38,8 @@ Usage: khoomei [--home DIR] COMMAND [flags]
 
 Commands:
   setup    configure this machine as hub or caller (prints a plan; --apply writes)
-  agent    hub owner: register an agent, bind it to a tailnet node, set its wake adapter
+  agent    hub owner: register an agent (NAME or OWNER/NAME), bind it to a tailnet node, set its wake adapter
+  owner    hub owner: register another person's handle and Tailscale login so their agents may connect
   serve    run the hub as an embedded tailnet node
   send     send a message to an agent
   inbox    list pending messages
@@ -88,7 +89,7 @@ func run(args []string) error {
 	cmds := map[string]func(context.Context, *config.Config, []string) error{
 		"setup": cmdSetup, "agent": cmdAgent, "serve": cmdServe, "send": cmdSend,
 		"inbox": cmdInbox, "wait": cmdWait, "ack": cmdAck, "doctor": cmdDoctor,
-		"watch": cmdWatch, "mcp": cmdMCP,
+		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner,
 	}
 	fn, ok := cmds[rest[0]]
 	if !ok {
@@ -140,22 +141,26 @@ func newNode(cfg *config.Config) *tsnet.Server {
 // whois resolves a tailnet address through the embedded node's local client.
 type whois struct{ s *tsnet.Server }
 
-func (w whois) Resolve(ctx context.Context, ip netip.Addr) (string, error) {
+func (w whois) Resolve(ctx context.Context, ip netip.Addr) (hub.Peer, error) {
 	lc, err := w.s.LocalClient()
 	if err != nil {
-		return "", hub.ErrUnavailable
+		return hub.Peer{}, hub.ErrUnavailable
 	}
 	resp, err := lc.WhoIs(ctx, ip.String())
 	if err != nil {
 		if ctx.Err() != nil {
-			return "", hub.ErrUnavailable
+			return hub.Peer{}, hub.ErrUnavailable
 		}
-		return "", err
+		return hub.Peer{}, err
 	}
 	if resp.Node == nil {
-		return "", errors.New("no node")
+		return hub.Peer{}, errors.New("no node")
 	}
-	return resp.Node.Name, nil
+	peer := hub.Peer{Node: resp.Node.Name}
+	if resp.UserProfile != nil {
+		peer.Login = resp.UserProfile.LoginName
+	}
+	return peer, nil
 }
 
 // --------------------------------------------------------------------------- commands
@@ -165,6 +170,7 @@ func cmdSetup(_ context.Context, cfg *config.Config, args []string) error {
 	hubRole := fs.Bool("hub-role", false, "this machine runs the hub")
 	hubAddr := fs.String("hub", "", "this machine is a caller of that hub (HOST[:PORT])")
 	agent := fs.String("agent", "", "this machine's own agent name")
+	owner := fs.String("owner", "", "this machine's owner handle; bare agent names qualify to it (owner/agent)")
 	transport := fs.String("transport", "", "caller transport: direct (host routes to the tailnet) or tsnet (own embedded node)")
 	port := fs.Int("port", 0, "hub port")
 	hostname := fs.String("hostname", "", "embedded node name on the tailnet")
@@ -178,9 +184,15 @@ func cmdSetup(_ context.Context, cfg *config.Config, args []string) error {
 	if *hubAddr != "" {
 		cfg.Role, cfg.Hub = config.RoleCaller, *hubAddr
 	}
+	if *owner != "" {
+		if !protocol.ValidAgent(*owner) {
+			return errors.New("bad owner handle")
+		}
+		cfg.Owner = *owner
+	}
 	if *agent != "" {
 		if !protocol.ValidAgent(*agent) {
-			return errors.New("bad agent name")
+			return errors.New("bad agent name (one part; the owner comes from --owner)")
 		}
 		cfg.Agent = *agent
 		if cfg.Role == config.RoleHub {
@@ -225,10 +237,13 @@ func cmdAgent(_ context.Context, cfg *config.Config, args []string) error {
 	remove := fs.Bool("remove", false, "unregister the agent")
 	apply := fs.Bool("apply", false, "write the config")
 	fs.Parse(args)
-	if fs.NArg() != 1 || !protocol.ValidAgent(fs.Arg(0)) {
-		return errors.New("usage: khoomei agent NAME [flags]")
+	if fs.NArg() != 1 || !protocol.ValidAddress(fs.Arg(0)) {
+		return errors.New("usage: khoomei agent NAME|OWNER/NAME [flags]")
 	}
-	name := fs.Arg(0)
+	name := protocol.Qualify(fs.Arg(0), cfg.Owner)
+	if o, _, _ := protocol.SplitAddress(name); o != "" && o != cfg.Owner && cfg.Owners[o] == nil {
+		return fmt.Errorf("owner %s is not registered; run: khoomei owner %s --login LOGIN --apply", o, o)
+	}
 	if *remove {
 		delete(cfg.Agents, name)
 	} else {
@@ -260,12 +275,46 @@ func cmdAgent(_ context.Context, cfg *config.Config, args []string) error {
 	return nil
 }
 
+func cmdOwner(_ context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("owner", flag.ExitOnError)
+	login := fs.String("login", "", "the person's Tailscale login as WhoIs reports it (alice@github, bob@example.com)")
+	remove := fs.Bool("remove", false, "unregister the owner (their agents stay registered but can no longer connect)")
+	apply := fs.Bool("apply", false, "write the config")
+	fs.Parse(args)
+	if fs.NArg() != 1 || !protocol.ValidAgent(fs.Arg(0)) {
+		return errors.New("usage: khoomei owner HANDLE --login LOGIN [--apply]")
+	}
+	handle := fs.Arg(0)
+	if cfg.Owners == nil {
+		cfg.Owners = map[string]*config.OwnerSpec{}
+	}
+	if *remove {
+		delete(cfg.Owners, handle)
+	} else {
+		if *login == "" && cfg.Owners[handle] == nil {
+			return errors.New("--login is required for a new owner")
+		}
+		if *login != "" {
+			cfg.Owners[handle] = &config.OwnerSpec{Login: strings.ToLower(*login)}
+		}
+	}
+	printJSON(cfg.Owners)
+	if *apply {
+		return cfg.Save()
+	}
+	fmt.Fprintln(os.Stderr, "(plan only; add --apply)")
+	return nil
+}
+
 func cmdServe(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.Int("port", cfg.Port, "port to listen on")
 	fs.Parse(args)
 	if cfg.Role != config.RoleHub {
 		return errors.New("this machine is configured as a caller; run setup --hub-role first")
+	}
+	if cfg.Owner == "" {
+		logf("no owner handle set; running in single-owner mode (setup --owner HANDLE enables owner/agent addresses)")
 	}
 
 	node := newNode(cfg)
@@ -321,14 +370,19 @@ func hubClient(ctx context.Context, cfg *config.Config) (*client.Client, func(),
 	return client.New("http://"+addr, hc), func() { node.Close() }, nil
 }
 
+// agentName is the address this command acts as: --as (qualified with this machine's owner when bare),
+// else the configured owner/agent.
 func agentName(cfg *config.Config, override string) (string, error) {
 	if override != "" {
-		return override, nil
+		if !protocol.ValidAddress(override) {
+			return "", errors.New("bad --as address")
+		}
+		return protocol.Qualify(override, cfg.Owner), nil
 	}
 	if cfg.Agent == "" {
 		return "", errors.New("no agent name: pass --as NAME or set one with setup --agent NAME")
 	}
-	return cfg.Agent, nil
+	return cfg.SelfAddress(), nil
 }
 
 func cmdSend(ctx context.Context, cfg *config.Config, args []string) error {
@@ -523,7 +577,7 @@ func cmdMCP(ctx context.Context, cfg *config.Config, args []string) error {
 
 func cmdDoctor(ctx context.Context, cfg *config.Config, _ []string) error {
 	report := map[string]any{
-		"home": cfg.Home, "config": cfg.Exists(), "role": cfg.Role, "agent": cfg.Agent,
+		"home": cfg.Home, "config": cfg.Exists(), "role": cfg.Role, "owner": cfg.Owner, "agent": cfg.Agent, "address": cfg.SelfAddress(),
 		"transport": cfg.Transport, "tsnet_dir": cfg.TSNetDir(), "tsnet_hostname": cfg.TSNetHostname(),
 		"version": hub.Version, "go": runtime.Version(), "platform": runtime.GOOS + "/" + runtime.GOARCH,
 	}
