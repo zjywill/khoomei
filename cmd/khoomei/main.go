@@ -48,6 +48,7 @@ Commands:
   watch    long-poll in a loop and run a local command when messages arrive (caller-side wake)
   mcp      serve the four tools over stdio for MCP hosts such as Claude Code and Codex
   doctor   read-only status report
+  version  print the version
 
 Data directory: --home, $KHOOMEI_HOME, or ~/.khoomei.
 `
@@ -90,6 +91,7 @@ func run(args []string) error {
 		"setup": cmdSetup, "agent": cmdAgent, "serve": cmdServe, "send": cmdSend,
 		"inbox": cmdInbox, "wait": cmdWait, "ack": cmdAck, "doctor": cmdDoctor,
 		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner,
+		"version": func(context.Context, *config.Config, []string) error { fmt.Println("khoomei", hub.Version); return nil },
 	}
 	fn, ok := cmds[rest[0]]
 	if !ok {
