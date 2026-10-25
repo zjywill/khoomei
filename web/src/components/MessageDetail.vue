@@ -48,7 +48,8 @@ const raw = computed(() => JSON.stringify({ envelope: props.rec.envelope, receiv
         <li v-for="f in rec.envelope.files" :key="f.sha256" class="rounded-md bg-elevated/50 p-3">
           <div class="flex items-center justify-between gap-2">
             <span class="truncate">{{ f.name }}</span>
-            <UButton :to="blobURL(f)" :download="f.name" icon="i-lucide-download" :label="bytes(f.size)" size="xs" color="neutral" variant="outline" />
+            <UBadge v-if="rec.files_gone?.includes(f.sha256)" label="已清理" color="neutral" variant="subtle" size="sm" />
+            <UButton v-else :to="blobURL(f)" :download="f.name" icon="i-lucide-download" :label="bytes(f.size)" size="xs" color="neutral" variant="outline" />
           </div>
           <p class="mt-1 break-all font-mono text-xs text-muted">sha256 {{ f.sha256 }}</p>
           <p v-if="f.type" class="font-mono text-xs text-muted">{{ f.type }}</p>

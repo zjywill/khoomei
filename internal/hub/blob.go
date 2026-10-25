@@ -56,6 +56,19 @@ func (h *Hub) handleBlobPut(w http.ResponseWriter, r *http.Request, id Identity)
 		writeJSON(w, 507, map[string]any{"ok": false, "error": "hub disk nearly full"})
 		return
 	}
+	// The cap on all files together; content already on the hub costs nothing.
+	if want := r.Header.Get("X-Khoomei-SHA256"); !protocol.ValidSHA256(want) || func() bool { _, err := h.Blobs.Stat(want); return err != nil }() {
+		used, err := h.Blobs.Total()
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		if limit := h.Cfg.Blob.TotalBytes(); used+r.ContentLength > limit {
+			writeJSON(w, 507, map[string]any{"ok": false, "error": fmt.Sprintf(
+				"hub file storage full (%d of %d MB); files are freed once their messages are acked", used>>20, limit>>20)})
+			return
+		}
+	}
 	typ, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	sha, dup, err := h.Blobs.Put(r.Body, r.ContentLength, max, r.Header.Get("X-Khoomei-SHA256"), typ, agent)
 	switch {

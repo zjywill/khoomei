@@ -96,7 +96,7 @@ const totals = computed(() => {
           <UCard>
             <p class="text-xs text-muted">附件（blobs/）</p>
             <p class="mt-1 text-xl font-semibold">{{ bytes(storage.files.bytes) }}</p>
-            <p class="text-xs text-muted">{{ storage.files.count }} 个文件，跟着最后一封引用它的信一起清理</p>
+            <p class="text-xs text-muted">{{ storage.files.count }} 个文件，上限 {{ storage.blob.total_mb }} MB</p>
           </UCard>
           <UCard>
             <p class="text-xs text-muted">磁盘剩余</p>
@@ -115,7 +115,8 @@ const totals = computed(() => {
           :description="[
             storage.retention.max_mb ? `已读总量上限 ${storage.retention.max_mb} MB。` : '',
             storage.retention.last_run ? `上次自动清理：${fullTime(storage.retention.last_run)}，删掉 ${storage.retention.last_pruned} 条。` : 'hub 启动后还没跑过自动清理。',
-            '未读消息不会被自动清理；收到不满 24 小时的消息都不会被清理。改保留期在 hub 的 config.json 里设 retention.acked_days。',
+            `附件比文字占地方，单独清理：附件上传满 ${storage.blob.keep_hours} 小时、带它的信都已读，就删附件，文字照旧保留；附件总量超过 ${storage.blob.total_mb} MB 时先删最旧的已读附件，未读的附件不删，满了就拒收新附件。`,
+            '未读消息不会被自动清理；收到不满 24 小时的消息都不会被清理。改保留期在 hub 的 config.json 里设 retention.acked_days 和 blob.keep_hours。',
           ].join('')"
         />
 

@@ -170,7 +170,8 @@ func (p *Panel) load(e *entry) (Record, bool) {
 	if err != nil {
 		return Record{}, false
 	}
-	return Record{Envelope: rec.Envelope, Received: rec.Received, Seq: e.Seq, Room: e.Room, Acked: acked || e.Acked, Wake: e.Wake}, true
+	return Record{Envelope: rec.Envelope, Received: rec.Received, Seq: e.Seq, Room: e.Room, Acked: acked || e.Acked, Wake: e.Wake,
+		Gone: p.gone(rec.Envelope.Files)}, true
 }
 
 // handleMessage finds one message by id, for reply quotes whose original is not on the loaded page.

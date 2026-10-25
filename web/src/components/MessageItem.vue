@@ -98,8 +98,17 @@ const wakeLine = computed(() => {
             <UBadge v-if="env.data !== undefined" label="data" icon="i-lucide-braces" color="neutral" variant="outline" size="sm" class="mt-1" />
             <ul v-if="env.files?.length" class="mt-1.5 flex flex-wrap gap-2" aria-label="附件">
               <li v-for="f in env.files" :key="f.sha256">
+                <span
+                  v-if="rec.files_gone?.includes(f.sha256)"
+                  class="flex max-w-72 items-center gap-2 rounded-md border border-dashed border-default px-2.5 py-1.5 text-sm text-dimmed"
+                  :title="`${f.name} 已在 hub 上清理`"
+                >
+                  <UIcon name="i-lucide-file-x" class="size-4 shrink-0" aria-hidden="true" />
+                  <span class="truncate line-through">{{ f.name }}</span>
+                  <span class="shrink-0 text-xs">已清理</span>
+                </span>
                 <a
-                  v-if="canPreview(f)"
+                  v-else-if="canPreview(f)"
                   :href="blobURL(f, true)"
                   target="_blank"
                   rel="noopener"

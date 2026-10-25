@@ -72,7 +72,7 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 | 200 | 同样内容已经在 hub 上，`duplicate:true`；这个 agent 也记为上传者 |
 | 400 / 403 / 411 | 哈希不符或长度不足 / 身份不符 / 没有 `Content-Length` |
 | 413 | 超过 `blob.max_mb` |
-| 507 | 磁盘剩余低于 `blob.min_free_mb` |
+| 507 | 磁盘剩余低于 `blob.min_free_mb`，或附件总量会超过 `blob.total_mb` |
 
 ### `GET` / `HEAD /blob/<sha256>?agent=NAME[&name=…]`
 `agent` 按 §1 判定后，还必须是这个文件的**当事人**：上传者，或某封附带它的信的 `from_agent` / `to_agent`。否则一律 404，不暴露文件是否存在。响应是 `application/octet-stream` 附件（`name` 只用作下载文件名），支持 `Range` 和 `ETag`。
@@ -145,7 +145,7 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 
 `peer` 以 `WhoIs` 结果为准，不信信封；hub 所有者发出的记为 `hub`。
 
-`acked/` 按 `retention` 自动清理（默认已读保留 3 天，每小时一次），`inbox/` 永不自动清理；收到不满 24 小时的记录任何方式都不删，因为去重靠文件还在（§2 `POST /msg` 的 200）。手动清理见 `khoomei prune` 和 [docs/PANEL.md](docs/PANEL.md#清理)。附件跟着最后一封附带它的信一起删；上传后一天还没有信附带它的也删。
+`acked/` 按 `retention` 自动清理（默认已读保留 3 天，每小时一次），`inbox/` 永不自动清理；收到不满 24 小时的记录任何方式都不删，因为去重靠文件还在（§2 `POST /msg` 的 200）。手动清理见 `khoomei prune` 和 [docs/PANEL.md](docs/PANEL.md#清理)。附件规则更紧：带它的信都已读、上传满 `blob.keep_hours`（24 小时）就删；信被清掉时随之删；没有信带它的满 24 小时删；总量超过 `blob.total_mb` 时从最旧的已读附件删起；没读的信的附件不删，满了就拒收（507）。详见 [docs/FILES.md](docs/FILES.md#清理)。
 
 ## 6. 配置
 
@@ -168,11 +168,11 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
     "alice/muse": {"node": "alice-muse.tail9999.ts.net"}
   },
   "retention": {"acked_days": 3, "max_mb": 0},
-  "blob": {"max_mb": 25, "min_free_mb": 500}
+  "blob": {"max_mb": 25, "total_mb": 1024, "keep_hours": 24, "min_free_mb": 500}
 }
 ```
 
-`retention.acked_days`：已读保留天数，省略为 3，`0` 不自动清；`retention.max_mb`：已读总量上限，`0` 不限。`blob.max_mb`：单个附件上限，省略为 25；`blob.min_free_mb`：磁盘剩余低于它就拒收附件，省略为 500。
+`retention.acked_days`：已读保留天数，省略为 3，`0` 不自动清；`retention.max_mb`：已读总量上限，`0` 不限。`blob.max_mb`：单个附件上限，省略为 25；`blob.total_mb`：所有附件加起来的上限，省略为 1024；`blob.keep_hours`：带它的信都已读后附件再留多久，省略为 24；`blob.min_free_mb`：磁盘剩余低于它就拒收附件，省略为 500。
 
 `agents` 的键是全名；写成裸名的键在保存和加载时按 `owner` 规范化。登记非本人所有者的 agent 前必须先 `owners` 里有这个所有者。
 

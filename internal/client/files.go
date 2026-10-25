@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/zjywill/khoomei/internal/protocol"
@@ -109,6 +110,30 @@ func (c *Client) fetchOne(ctx context.Context, agent string, f protocol.FileRef,
 		return "", err
 	}
 	return dest, nil
+}
+
+// KeepFetched is how long downloads stay in the default files directory on a caller. Agents copy
+// what they need elsewhere; attachments are large and caller machines (sandboxes, cloud computers) small.
+const KeepFetched = 72 * time.Hour
+
+// CleanFetched removes per-message download folders under root older than keep. Only folders named
+// like message ids are touched, so nothing the user put there by hand goes.
+func CleanFetched(root string, keep time.Duration) (removed int) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0
+	}
+	cutoff := time.Now().Add(-keep)
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil || !e.IsDir() || !protocol.ValidID(e.Name()) || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if os.RemoveAll(filepath.Join(root, e.Name())) == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 // SafeName turns a sender-chosen file name into one component that stays inside its directory.

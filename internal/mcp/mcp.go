@@ -279,6 +279,7 @@ func (s *Server) fetch(ctx context.Context, id, dir string) ([]string, error) {
 			if s.FilesDir == "" {
 				return nil, errors.New("dir required")
 			}
+			client.CleanFetched(s.FilesDir, client.KeepFetched)
 			dir = filepath.Join(s.FilesDir, client.SafeName(id))
 		}
 		return s.Client.FetchFiles(ctx, s.Agent, rec.Envelope.Files, dir)

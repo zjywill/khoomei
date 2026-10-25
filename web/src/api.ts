@@ -45,6 +45,8 @@ export interface Rec {
   room: string
   acked: boolean
   wake: '' | 'ok' | 'failed' | 'downgraded'
+  /** Attachments already cleaned up on the hub, by sha256. */
+  files_gone?: string[]
   wakeDetail?: string
 }
 
@@ -90,6 +92,7 @@ export interface Storage {
   retention: { acked_days: number; max_mb: number; last_run?: string; last_pruned: number }
   rooms: { id: string; pending: Usage; acked: Usage; files: Usage }[]
   files: Usage
+  blob: { total_mb: number; keep_hours: number; max_mb: number }
 }
 
 export interface PruneRequest {

@@ -739,7 +739,9 @@ func cmdFetch(ctx context.Context, cfg *config.Config, args []string) error {
 		}
 		dir := *out
 		if dir == "" {
-			dir = filepath.Join(cfg.Home, "files", client.SafeName(id))
+			root := filepath.Join(cfg.Home, "files")
+			client.CleanFetched(root, client.KeepFetched)
+			dir = filepath.Join(root, client.SafeName(id))
 		}
 		paths, err := c.FetchFiles(ctx, agent, rec.Envelope.Files, dir)
 		if err != nil {

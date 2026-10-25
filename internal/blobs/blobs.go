@@ -44,8 +44,10 @@ func (m *Meta) Seen() time.Time {
 }
 
 type Store struct {
-	dir string
-	mu  sync.Mutex
+	dir   string
+	mu    sync.Mutex
+	total int64 // bytes of all .bin files; valid once known is set
+	known bool
 }
 
 func New(home string) *Store { return &Store{dir: filepath.Join(home, "blobs")} }
@@ -102,6 +104,7 @@ func (s *Store) Put(r io.Reader, size, max int64, want, typ, uploader string) (s
 			return "", false, err
 		}
 		meta = &Meta{Size: n, Type: typ, FirstSeen: protocol.Now()}
+		s.total += n
 	default:
 		return "", false, err
 	}
@@ -149,9 +152,68 @@ func (s *Store) Remove(sha string) (int64, error) {
 	if err := os.Remove(s.Path(sha)); err != nil {
 		return 0, err
 	}
+	s.total -= st.Size()
 	_ = os.Remove(s.path(sha, ".json"))
 	_ = os.Remove(filepath.Dir(s.Path(sha))) // only succeeds once the shard is empty
 	return st.Size(), nil
+}
+
+// Total is the bytes all stored files take, counted from disk once and kept up to date after that.
+func (s *Store) Total() (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.known {
+		return s.total, nil
+	}
+	var total int64
+	err := filepath.WalkDir(s.dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(p, ".bin") {
+			if info, err := d.Info(); err == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	s.total, s.known = total, true
+	return total, nil
+}
+
+// Sweep removes what crashes leave behind, if older than cutoff: half-received uploads in tmp/, and
+// contents whose sidecar was never written. It returns the files removed and bytes freed.
+func (s *Store) Sweep(cutoff time.Time) (n int, freed int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = filepath.WalkDir(s.dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			return nil
+		}
+		stray := filepath.Base(filepath.Dir(p)) == "tmp"
+		if sha, ok := strings.CutSuffix(filepath.Base(p), ".bin"); ok && !stray {
+			_, err := os.Stat(s.path(sha, ".json"))
+			if stray = errors.Is(err, os.ErrNotExist); stray {
+				s.total -= info.Size()
+			}
+		}
+		if stray && os.Remove(p) == nil {
+			n++
+			freed += info.Size()
+		}
+		return nil
+	})
+	return n, freed
 }
 
 // Each calls fn for every stored blob; unreadable sidecars are skipped.

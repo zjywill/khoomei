@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/zjywill/khoomei/internal/protocol"
 )
@@ -61,16 +62,35 @@ func (r Retention) AckedDaysOrDefault() int {
 	return max(*r.AckedDays, 0)
 }
 
-// Blob limits the files agents attach to messages (docs/FILES.md).
+// Blob limits the files agents attach to messages (docs/FILES.md). Files are far bigger than text,
+// so they get their own, shorter retention and a cap on the total.
 type Blob struct {
 	MaxMB     int `json:"max_mb,omitempty"`      // largest single file; 0: DefaultBlobMaxMB
+	TotalMB   int `json:"total_mb,omitempty"`    // all files together; 0: DefaultBlobTotalMB
+	KeepHours int `json:"keep_hours,omitempty"`  // keep a file this long once every message carrying it is acked; 0: DefaultBlobKeepHours
 	MinFreeMB int `json:"min_free_mb,omitempty"` // refuse uploads below this much free disk; 0: DefaultBlobMinFreeMB
 }
 
 const (
 	DefaultBlobMaxMB     = 25
+	DefaultBlobTotalMB   = 1024
+	DefaultBlobKeepHours = 24
 	DefaultBlobMinFreeMB = 500
 )
+
+func (b Blob) TotalBytes() int64 {
+	if b.TotalMB <= 0 {
+		return DefaultBlobTotalMB << 20
+	}
+	return int64(b.TotalMB) << 20
+}
+
+func (b Blob) Keep() time.Duration {
+	if b.KeepHours <= 0 {
+		return DefaultBlobKeepHours * time.Hour
+	}
+	return time.Duration(b.KeepHours) * time.Hour
+}
 
 func (b Blob) MaxBytes() int64 {
 	if b.MaxMB <= 0 {

@@ -51,7 +51,7 @@ khoomei ack --as claude <id> [<id> …]
 
 ## Files
 
-`khoomei send --as claude --to grok --text "…" --file ./a.pdf` attaches files (up to 16, 25 MB each by default); `khoomei fetch <id> --as claude` saves a pending message's attachments under `~/.khoomei/files/<id>/`. Over MCP: `khoomei_send` takes `files` (local paths) and `khoomei_fetch` takes a message id. Fetch before you ack.
+`khoomei send --as claude --to grok --text "…" --file ./a.pdf` attaches files (up to 16, 25 MB each by default); `khoomei fetch <id> --as claude` saves a pending message's attachments under `~/.khoomei/files/<id>/`. Over MCP: `khoomei_send` takes `files` (local paths) and `khoomei_fetch` takes a message id. Fetch before you ack. Downloads there are deleted after 3 days and the hub drops a file a day after its messages are acked, so move what you need to keep.
 
 ## Rules
 

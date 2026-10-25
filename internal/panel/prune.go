@@ -203,13 +203,13 @@ func (p *Panel) Retain() (PruneResult, error) {
 			}
 		}
 	}
-	n, freed, err := p.pruneOrphans()
+	n, freed, err := p.pruneFiles()
 	total.Bytes += freed
 	if err != nil {
 		return total, err
 	}
 	if n > 0 {
-		p.logf("prune (orphaned files): removed %d files, %d bytes", n, freed)
+		p.logf("prune (files): removed %d files, %d bytes", n, freed)
 	}
 	p.mu.Lock()
 	p.lastRun, p.lastGone = p.now(), total.Count
@@ -217,37 +217,100 @@ func (p *Panel) Retain() (PruneResult, error) {
 	return total, nil
 }
 
-// pruneOrphans removes files no indexed message attaches, once they are a day old: uploads whose
-// message never got sent, and leftovers of an interrupted prune.
-func (p *Panel) pruneOrphans() (n int, freed int64, err error) {
+// fileState is how the index sees one stored file.
+type fileState struct {
+	sha      string
+	seen     time.Time
+	size     int64
+	refs     int  // messages attaching it
+	allAcked bool // every one of them is acked
+}
+
+// pruneFiles applies the file rules of docs/FILES.md#清理, independent of the text's retention:
+//   - no message attaches it and it is a day old (an upload whose message never went out);
+//   - every message attaching it is acked, and it is older than blob.keep_hours: the recipients
+//     fetch before they ack, so after that nobody needs the bytes;
+//   - while all files together exceed blob.total_mb, the oldest fully acked ones go first.
+//
+// Files of pending messages are never removed here; when they alone fill the cap, uploads get 507.
+// It also sweeps crash leftovers older than a day.
+func (p *Panel) pruneFiles() (n int, freed int64, err error) {
 	if p.blobs == nil {
 		return 0, 0, nil
 	}
-	cutoff := p.now().Add(-MinPruneAge)
-	var stale []string
+	now := p.now()
+	orphanCutoff, keepCutoff := now.Add(-MinPruneAge), now.Add(-p.cfg.Blob.Keep())
+	n, freed = p.blobs.Sweep(orphanCutoff)
+
+	var files []fileState
+	var used int64
 	err = p.blobs.Each(func(sha string, m blobs.Meta) {
-		p.mu.Lock()
-		used := p.refs[sha] > 0
-		p.mu.Unlock()
-		if !used && m.Seen().Before(cutoff) {
-			stale = append(stale, sha)
-		}
+		files = append(files, fileState{sha: sha, seen: m.Seen(), size: m.Size})
+		used += m.Size
 	})
-	for _, sha := range stale {
+	if err != nil {
+		return n, freed, err
+	}
+	p.mu.Lock()
+	for i := range files {
+		files[i].refs, files[i].allAcked = p.fileRefs(files[i].sha)
+	}
+	p.mu.Unlock()
+
+	remove := func(f fileState) {
 		p.mu.Lock()
-		used := p.refs[sha] > 0 // attached again since the scan
+		refs, allAcked := p.fileRefs(f.sha) // the index may have moved since the scan
 		p.mu.Unlock()
-		if used {
-			continue
+		if refs != f.refs || allAcked != f.allAcked {
+			return
 		}
-		f, rerr := p.blobs.Remove(sha)
-		if rerr != nil && err == nil {
-			err = rerr
+		got, rerr := p.blobs.Remove(f.sha)
+		if rerr != nil {
+			if err == nil {
+				err = rerr
+			}
+			return
 		}
 		n++
-		freed += f
+		freed += got
+		used -= got
+	}
+	var acked []fileState
+	for _, f := range files {
+		switch {
+		case f.refs == 0 && f.seen.Before(orphanCutoff):
+			remove(f)
+		case f.refs > 0 && f.allAcked && f.seen.Before(keepCutoff):
+			remove(f)
+		case f.refs > 0 && f.allAcked:
+			acked = append(acked, f)
+		}
+	}
+	if limit := p.cfg.Blob.TotalBytes(); used > limit {
+		sort.Slice(acked, func(i, j int) bool { return acked[i].seen.Before(acked[j].seen) })
+		for _, f := range acked {
+			if used <= limit*9/10 {
+				break
+			}
+			remove(f)
+		}
 	}
 	return n, freed, err
+}
+
+// fileRefs counts the messages attaching sha and whether all of them are acked; the caller holds p.mu.
+func (p *Panel) fileRefs(sha string) (refs int, allAcked bool) {
+	if p.refs[sha] == 0 {
+		return 0, false
+	}
+	allAcked = true
+	for _, e := range p.byKey {
+		if slices.Contains(e.Files, sha) {
+			refs++
+			allAcked = allAcked && e.Acked
+		}
+	}
+	return refs, allAcked
 }
 
 // Run applies retention a minute after start and then every hour until ctx ends.
@@ -339,7 +402,8 @@ func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
 	p.mu.Unlock()
 	free, total := disk.Space(p.cfg.Home)
 	writeJSON(w, 200, map[string]any{"ok": true, "disk": map[string]any{"free_bytes": free, "total_bytes": total},
-		"retention": ret, "rooms": rooms, "files": files})
+		"retention": ret, "rooms": rooms, "files": files,
+		"blob": map[string]any{"total_mb": p.cfg.Blob.TotalBytes() >> 20, "keep_hours": int(p.cfg.Blob.Keep().Hours()), "max_mb": p.cfg.Blob.MaxBytes() >> 20}})
 }
 
 // handlePrune is the panel's only write. Besides the hub's Host check it insists on a JSON

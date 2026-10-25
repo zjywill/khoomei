@@ -69,6 +69,7 @@ type Record struct {
 	Room     string            `json:"room"`
 	Acked    bool              `json:"acked"`
 	Wake     string            `json:"wake"`
+	Gone     []string          `json:"files_gone,omitempty"` // attachments already cleaned up, by sha256
 }
 
 // New builds the panel and indexes everything already on disk.
@@ -221,7 +222,21 @@ func (p *Panel) Since(ctx context.Context, after int64, timeout time.Duration) (
 
 // record pairs an index entry with its stored form; the caller holds p.mu.
 func (p *Panel) record(e *entry, rec protocol.Record) Record {
-	return Record{Envelope: rec.Envelope, Received: rec.Received, Seq: e.Seq, Room: e.Room, Acked: e.Acked, Wake: e.Wake}
+	return Record{Envelope: rec.Envelope, Received: rec.Received, Seq: e.Seq, Room: e.Room, Acked: e.Acked, Wake: e.Wake, Gone: p.gone(rec.Envelope.Files)}
+}
+
+// gone lists the attachments no longer on the hub.
+func (p *Panel) gone(files []protocol.FileRef) []string {
+	var out []string
+	for _, f := range files {
+		if p.blobs == nil {
+			break
+		}
+		if _, err := p.blobs.Stat(f.SHA256); err != nil {
+			out = append(out, f.SHA256)
+		}
+	}
+	return out
 }
 
 func sortedKeys[V any](m map[string]V) []string {

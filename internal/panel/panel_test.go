@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -577,5 +579,102 @@ func TestPanelBlob(t *testing.T) {
 	f.get("/admin/api/storage", &st)
 	if st.Files.Count != 3 || st.Rooms[0].Files.Count != 2 {
 		t.Fatalf("storage: %+v %+v", st.Files, st.Rooms)
+	}
+}
+
+func TestFileRetentionIsShorterThanText(t *testing.T) {
+	f := newFixture(t)
+	read := f.upload("junyi/muse", []byte("fetched and acked"))
+	waiting := f.upload("junyi/muse", []byte("not fetched yet"))
+	f.sendFiles(local, "junyi/muse", "junyi/grok", read)
+	ackAll(t, f, "junyi/grok")
+	f.sendFiles(local, "junyi/muse", "junyi/grok", waiting) // after the ack: still pending
+
+	// A day and a bit later: the acked message's file goes, the message text stays (3 days),
+	// and the pending message keeps its file.
+	f.p.now = func() time.Time { return time.Now().Add(25 * time.Hour) }
+	if _, err := f.p.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.h.Blobs.Stat(read.SHA256); err == nil {
+		t.Fatal("file of an acked message kept past keep_hours")
+	}
+	if _, err := f.h.Blobs.Stat(waiting.SHA256); err != nil {
+		t.Fatal("file of a pending message removed")
+	}
+	var msgs messagesResp
+	f.get("/admin/api/messages?room=self", &msgs)
+	if len(msgs.Messages) != 2 {
+		t.Fatalf("messages: %d", len(msgs.Messages))
+	}
+	for _, m := range msgs.Messages {
+		gone := len(m.Gone) == 1
+		if (m.Envelope.Files[0].SHA256 == read.SHA256) != gone {
+			t.Fatalf("files_gone wrong for %s: %v", m.Envelope.Files[0].SHA256[:8], m.Gone)
+		}
+	}
+}
+
+func TestFileTotalCap(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.Blob = config.Blob{TotalMB: 1, KeepHours: 24 * 30}
+	chunk := func(c byte) []byte { return []byte(strings.Repeat(string(c), 400<<10)) }
+	a := f.upload("junyi/muse", chunk('a'))
+	f.sendFiles(local, "junyi/muse", "junyi/grok", a)
+	b := f.upload("junyi/muse", chunk('b'))
+	f.sendFiles(local, "junyi/muse", "junyi/grok", b)
+	ackAll(t, f, "junyi/grok")
+	c := f.upload("junyi/muse", chunk('c'))
+	f.sendFiles(local, "junyi/muse", "junyi/grok", c) // after the ack: pending
+
+	// 1.2 MB > 1 MB: the oldest acked file goes until under 90%; the pending one stays.
+	if _, err := f.p.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.h.Blobs.Stat(a.SHA256); err == nil {
+		t.Fatal("oldest acked file survived the cap")
+	}
+	for _, keep := range []protocol.FileRef{b, c} {
+		if _, err := f.h.Blobs.Stat(keep.SHA256); err != nil {
+			t.Fatalf("%s removed", keep.SHA256[:8])
+		}
+	}
+	// Uploads that would cross the cap are refused.
+	big := chunk('d')
+	req, _ := http.NewRequest("PUT", f.srv.URL+"/blob?agent=junyi/muse", strings.NewReader(string(big)))
+	req.ContentLength = int64(len(big))
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode != 507 {
+			t.Fatalf("upload over cap: %d", resp.StatusCode)
+		}
+	}
+}
+
+func TestSweepLeftovers(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.cfg.Home, "blobs")
+	os.MkdirAll(filepath.Join(dir, "tmp"), 0o700)
+	os.MkdirAll(filepath.Join(dir, "ab"), 0o700)
+	half := filepath.Join(dir, "tmp", "up-123")
+	noMeta := filepath.Join(dir, "ab", "ab"+strings.Repeat("0", 62)+".bin")
+	os.WriteFile(half, []byte("partial"), 0o600)
+	os.WriteFile(noMeta, []byte("no sidecar"), 0o600)
+	old := time.Now().Add(-48 * time.Hour)
+	os.Chtimes(half, old, old)
+	os.Chtimes(noMeta, old, old)
+	fresh := filepath.Join(dir, "tmp", "up-456") // an upload in progress
+	os.WriteFile(fresh, []byte("streaming"), 0o600)
+	if _, err := f.p.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{half, noMeta} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("%s survived", p)
+		}
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatal("in-progress upload swept")
 	}
 }
