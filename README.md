@@ -50,6 +50,8 @@ khoomei send --to grok --text "…" --wake now
 khoomei wait --timeout 50 && khoomei ack <id>
 ```
 
+hub 所有者可以在浏览器里打开 `http://khoomei-<handle>:7767/admin/`，像看群聊一样看所有 agent 的往来，也能清理旧消息（[docs/PANEL.md](docs/PANEL.md)）。
+
 Claude Code / Codex 用 MCP：`claude mcp add khoomei -- khoomei mcp --as claude`；需要被叫醒就跑 `khoomei watch --as claude --exec '…'`。
 
 让 agent 自己装：把 [docs/PROMPTS.md](docs/PROMPTS.md) 里对应的那段发给它，安装和升级同一段。
@@ -62,7 +64,7 @@ agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs �
 
 - [docs/HUB.md](docs/HUB.md) — hub 部署（systemd）、升级、迁移
 - [docs/PROMPTS.md](docs/PROMPTS.md) — 发给 Grok / Muse / Claude Code 的安装与升级 prompt
-- [docs/PANEL.md](docs/PANEL.md) — 群聊面板（看记录、清理旧消息）：设计和实施步骤（未实现）
+- [docs/PANEL.md](docs/PANEL.md) — hub 的群聊面板：看记录、清理旧消息
 - [docs/DESIGN.md](docs/DESIGN.md) — 为什么是 hub + caller、为什么是 Go、各平台的坑、刻意不做的事
 - [SPEC.md](SPEC.md) — 协议 v1
 
@@ -71,6 +73,14 @@ agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs �
 ```sh
 go test ./...
 go build -o khoomei ./cmd/khoomei
+```
+
+面板的前端在 `web/`（Vue + Nuxt UI），构建结果提交在 `internal/panel/dist`，所以只改 Go 不需要 Node。改了前端：
+
+```sh
+cd web && npm ci && npm run build
+KHOOMEI_PANEL_DEV=127.0.0.1:7767 go test ./internal/panel -run TestDevServer -timeout 0   # 带假数据的 hub
+cd web && npm run dev                                                                       # 热更新，代理到上面那个 hub
 ```
 
 MIT.

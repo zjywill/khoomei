@@ -26,6 +26,9 @@ type Waker struct {
 	logf func(string, ...any)
 	mu   sync.Mutex
 	hits map[[2]string]hourCount
+	// OnWake, when set, hears the outcome of every wake the recipient's adapter was due:
+	// ok, failed (detail is the error) or downgraded (the hourly `now` budget ran out).
+	OnWake func(env *protocol.Envelope, result, detail string)
 }
 
 type hourCount struct {
@@ -74,16 +77,27 @@ func (w *Waker) Wake(env *protocol.Envelope) {
 		return
 	}
 	if w.Effective(env) != protocol.WakeNow {
+		if env.RequestedWake() == protocol.WakeNow && (spec.WakeMax == "" || spec.WakeMax == protocol.WakeNow) {
+			w.report(env, "downgraded", "")
+		}
 		return
 	}
 	go func() {
 		start := time.Now()
 		if err := w.fire(spec.Wake, env); err != nil {
 			w.logf("wake %s failed: %v", env.ToAgent, err)
+			w.report(env, "failed", err.Error())
 			return
 		}
 		w.logf("wake %s via %s ok in %s (msg %s)", env.ToAgent, spec.Wake.Type, time.Since(start).Round(time.Millisecond), env.ID)
+		w.report(env, "ok", "")
 	}()
+}
+
+func (w *Waker) report(env *protocol.Envelope, result, detail string) {
+	if w.OnWake != nil {
+		w.OnWake(env, result, detail)
+	}
 }
 
 type summary struct {

@@ -37,6 +37,9 @@ type Response struct {
 	Messages  []protocol.Record `json:"messages,omitempty"`
 	Acked     []string          `json:"acked,omitempty"`
 	Version   string            `json:"version,omitempty"`
+	DryRun    bool              `json:"dry_run,omitempty"`
+	Count     int               `json:"count,omitempty"`
+	Bytes     int64             `json:"bytes,omitempty"`
 }
 
 // New returns a client. Connections are not reused: the path to a hub often runs through a DERP
@@ -58,6 +61,10 @@ func New(base string, hc *http.Client) *Client {
 }
 
 func (c *Client) call(ctx context.Context, method, path string, body any, timeout time.Duration) (*Response, error) {
+	return c.callWith(ctx, method, path, body, timeout, nil)
+}
+
+func (c *Client) callWith(ctx context.Context, method, path string, body any, timeout time.Duration, hdr map[string]string) (*Response, error) {
 	var payload []byte
 	if body != nil {
 		var err error
@@ -79,6 +86,9 @@ func (c *Client) call(ctx context.Context, method, path string, body any, timeou
 		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
+		}
+		for k, v := range hdr {
+			req.Header.Set(k, v)
 		}
 		resp, err = c.HTTP.Do(req)
 		if err == nil || ctx.Err() != nil || !transient(err) {
@@ -130,4 +140,9 @@ func (c *Client) Wait(ctx context.Context, agent string, timeout time.Duration) 
 
 func (c *Client) Ack(ctx context.Context, agent string, ids []string) (*Response, error) {
 	return c.call(ctx, http.MethodPost, "/ack", map[string]any{"agent": agent, "ids": ids}, 30*time.Second)
+}
+
+// Prune asks the hub's panel to remove records (docs/PANEL.md#清理); only the hub owner may.
+func (c *Client) Prune(ctx context.Context, req any) (*Response, error) {
+	return c.callWith(ctx, http.MethodPost, "/admin/api/prune", req, 60*time.Second, map[string]string{"X-Khoomei-Panel": "1"})
 }

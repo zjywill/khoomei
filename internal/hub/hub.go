@@ -17,7 +17,7 @@ import (
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
-const Version = "0.3.7"
+const Version = "0.4.0"
 
 var (
 	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
@@ -61,6 +61,13 @@ type Hub struct {
 	Resolver Resolver
 	Waker    *Waker
 	Logf     func(string, ...any)
+	// Hosts are the names and addresses the hub answers to besides loopback (short node name, FQDN,
+	// tailnet IPs); /admin rejects any other Host header. serve fills them in once the node is up.
+	Hosts []string
+	// Observer, when set, hears about every stored record, ack, mailbox visit and wake (docs/PANEL.md).
+	Observer Observer
+	// Admin serves everything under /admin once withAdmin has let the request through; nil shows a placeholder.
+	Admin http.Handler
 	// Identify overrides the remote-address path; tests use it to pose as a peer.
 	Identify func(r *http.Request) (Identity, error)
 }
@@ -71,6 +78,11 @@ func New(cfg *config.Config, box *mailbox.Mailbox, res Resolver, logf func(strin
 	}
 	h := &Hub{Cfg: cfg, Box: box, Resolver: res, Waker: NewWaker(cfg, logf), Logf: logf}
 	h.Identify = h.identifyRemote
+	h.Waker.OnWake = func(env *protocol.Envelope, result, detail string) {
+		if h.Observer != nil {
+			h.Observer.Woke(env, result, detail)
+		}
+	}
 	return h
 }
 
@@ -172,14 +184,31 @@ func (h *Hub) Receive(id Identity, env *protocol.Envelope) (fresh bool, err erro
 	if id.Local {
 		peer = "hub"
 	}
-	fresh, err = h.Box.Store(env, peer, id.Login)
+	rec, fresh, err := h.Box.Store(env, peer, id.Login)
 	if err != nil {
 		return false, err
 	}
 	if fresh {
+		if h.Observer != nil {
+			h.Observer.Stored(rec)
+		}
 		h.Waker.Wake(env)
 	}
 	return fresh, nil
+}
+
+// Observer is told what happens in the mailboxes. Calls are synchronous and must be quick.
+type Observer interface {
+	Stored(rec protocol.Record)                         // a fresh record landed in an inbox
+	Acked(agent string, ids []string)                   // these ids actually moved to acked/
+	Seen(agent string, waiting int)                     // agent visited its mailbox; waiting: +1 entering /wait, -1 leaving, 0 otherwise
+	Woke(env *protocol.Envelope, result, detail string) // result: ok | failed | downgraded
+}
+
+func (h *Hub) seen(agent string, waiting int) {
+	if h.Observer != nil {
+		h.Observer.Seen(agent, waiting)
+	}
 }
 
 // --------------------------------------------------------------------------- HTTP
@@ -193,6 +222,8 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("GET /inbox", h.withIdentity(h.handleInbox))
 	mux.HandleFunc("GET /wait", h.withIdentity(h.handleInbox))
 	mux.HandleFunc("POST /ack", h.withIdentity(h.handleAck))
+	mux.HandleFunc("/admin", h.withAdmin(h.handleAdmin))
+	mux.HandleFunc("/admin/", h.withAdmin(h.handleAdmin))
 	mux.HandleFunc("GET /agents", h.withIdentity(func(w http.ResponseWriter, r *http.Request, id Identity) {
 		if !id.Local {
 			fail(w, ForbiddenError("owner only"))
@@ -275,13 +306,16 @@ func (h *Hub) handleInbox(w http.ResponseWriter, r *http.Request, id Identity) {
 	}
 	var items []protocol.Record
 	var err error
+	h.seen(agent, 0)
 	if r.URL.Path == "/wait" {
 		timeout := 50.0
 		if t := r.URL.Query().Get("timeout"); t != "" {
 			timeout, _ = strconv.ParseFloat(t, 64)
 		}
 		timeout = min(max(timeout, 0), 120)
+		h.seen(agent, +1)
 		items, err = h.Box.Wait(r.Context(), agent, time.Duration(timeout*float64(time.Second)))
+		h.seen(agent, -1)
 	} else {
 		items, err = h.Box.Pending(agent)
 	}
@@ -316,6 +350,10 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request, id Identity) {
 	if err != nil {
 		fail(w, err)
 		return
+	}
+	h.seen(agent, 0)
+	if h.Observer != nil && len(done) > 0 {
+		h.Observer.Acked(agent, done)
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "acked": done})
 }

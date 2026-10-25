@@ -1,0 +1,21 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+@source "./";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+/* A message the reader jumped to from a reply quote. */
+.flash {
+  animation: flash 2s ease-out;
+}
+@keyframes flash {
+  from { background-color: var(--ui-bg-accented); }
+  to { background-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .flash { animation: none; outline: 2px solid var(--ui-primary); }
+}

@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/zjywill/khoomei/internal/hub"
 	"github.com/zjywill/khoomei/internal/mailbox"
 	"github.com/zjywill/khoomei/internal/mcp"
+	"github.com/zjywill/khoomei/internal/panel"
 	"github.com/zjywill/khoomei/internal/protocol"
 	"github.com/zjywill/khoomei/internal/watch"
 )
@@ -40,6 +42,8 @@ Commands:
   setup    configure this machine as hub or caller (prints a plan; --apply writes)
   agent    hub owner: register an agent (NAME or OWNER/NAME), bind it to a tailnet node, set its wake adapter
   owner    hub owner: register another person's handle and Tailscale login so their agents may connect
+  admin    hub owner: let a browser on a tailnet node (NODE + its Tailscale login) open the panel at /admin
+  prune    hub owner: delete acked (or, for one own agent, pending) records older than a cutoff
   serve    run the hub as an embedded tailnet node
   send     send a message to an agent
   inbox    list pending messages
@@ -90,7 +94,7 @@ func run(args []string) error {
 	cmds := map[string]func(context.Context, *config.Config, []string) error{
 		"setup": cmdSetup, "agent": cmdAgent, "serve": cmdServe, "send": cmdSend,
 		"inbox": cmdInbox, "wait": cmdWait, "ack": cmdAck, "doctor": cmdDoctor,
-		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner,
+		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner, "admin": cmdAdmin, "prune": cmdPrune,
 		"version": func(context.Context, *config.Config, []string) error { fmt.Println("khoomei", hub.Version); return nil },
 	}
 	fn, ok := cmds[rest[0]]
@@ -317,6 +321,94 @@ func cmdOwner(_ context.Context, cfg *config.Config, args []string) error {
 	return nil
 }
 
+func cmdAdmin(_ context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("admin", flag.ExitOnError)
+	login := fs.String("login", "", "the node's Tailscale login as WhoIs reports it (junyi@github)")
+	remove := fs.Bool("remove", false, "revoke the node's panel access")
+	apply := fs.Bool("apply", false, "write the config")
+	fs.Parse(nameFirst(args))
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		return errors.New("usage: khoomei admin NODE --login LOGIN [--remove] [--apply]")
+	}
+	node := strings.TrimSuffix(fs.Arg(0), ".")
+	kept := []config.AdminSpec{}
+	for _, a := range cfg.Admins {
+		if !strings.EqualFold(a.Node, node) {
+			kept = append(kept, a)
+		}
+	}
+	if !*remove {
+		if *login == "" {
+			return errors.New("--login is required: the node alone is not enough to identify you")
+		}
+		kept = append(kept, config.AdminSpec{Node: node, Login: strings.ToLower(*login)})
+	}
+	cfg.Admins = kept
+	printJSON(cfg.Admins)
+	if *apply {
+		return cfg.Save()
+	}
+	fmt.Fprintln(os.Stderr, "(plan only; add --apply)")
+	return nil
+}
+
+func cmdPrune(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("prune", flag.ExitOnError)
+	older := fs.String("older-than", "24h", "age cutoff: 36h, 7d …; anything under 24h counts as 24h")
+	agent := fs.String("agent", "", "only records addressed to this agent")
+	pending := fs.Bool("pending", false, "delete unacknowledged records instead (needs --agent, one of your own)")
+	apply := fs.Bool("apply", false, "delete; without it only count")
+	fs.Parse(args)
+	if cfg.Role != config.RoleHub {
+		return errors.New("prune runs on the hub")
+	}
+	hours, err := parseAge(*older)
+	if err != nil {
+		return err
+	}
+	what := "acked"
+	if *pending {
+		what = "pending"
+	}
+	c, closeNode, err := hubClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer closeNode()
+	resp, err := c.Prune(ctx, panel.PruneRequest{Agent: *agent, What: what, OlderThanHours: hours, DryRun: !*apply})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("prune: %s (%d)", resp.Error, resp.Status)
+	}
+	verb := "would delete"
+	if !resp.DryRun {
+		verb = "deleted"
+	}
+	fmt.Printf("%s %d records, %.1f MB\n", verb, resp.Count, float64(resp.Bytes)/(1<<20))
+	if resp.DryRun {
+		fmt.Fprintln(os.Stderr, "(dry run; add --apply)")
+	}
+	return nil
+}
+
+// parseAge reads "36h" or "7d" as whole hours.
+func parseAge(s string) (int, error) {
+	if d, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(d)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("bad age %q", s)
+		}
+		return n * 24, nil
+	}
+	dur, err := time.ParseDuration(s)
+	if err != nil || dur < 0 {
+		return 0, fmt.Errorf("bad age %q: use 36h or 7d", s)
+	}
+	return int(dur.Hours()), nil
+}
+
 func cmdServe(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.Int("port", cfg.Port, "port to listen on")
@@ -335,7 +427,20 @@ func cmdServe(ctx context.Context, cfg *config.Config, args []string) error {
 	if err != nil {
 		return fmt.Errorf("tailnet: %w", err)
 	}
-	h := hub.New(cfg, mailbox.New(cfg.Home), whois{node}, logf)
+	box := mailbox.New(cfg.Home)
+	h := hub.New(cfg, box, whois{node}, logf)
+	pan, err := panel.New(cfg, box, logf)
+	if err != nil {
+		return fmt.Errorf("panel index: %w", err)
+	}
+	h.Observer, h.Admin = pan, pan.Handler()
+	go pan.Run(ctx)
+	if fqdn := strings.TrimSuffix(status.Self.DNSName, "."); fqdn != "" {
+		h.Hosts = append(h.Hosts, fqdn, strings.SplitN(fqdn, ".", 2)[0])
+	}
+	for _, ip := range status.TailscaleIPs {
+		h.Hosts = append(h.Hosts, ip.String())
+	}
 	srv := &http.Server{Handler: h.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
 	tsLn, err := node.Listen("tcp", fmt.Sprintf(":%d", *port))

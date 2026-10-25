@@ -1,4 +1,4 @@
-# 群聊面板（设计稿，未实现）
+# 群聊面板
 
 hub 上已经有所有人的信箱，把它们按时间合起来，就是一个群聊。面板是 hub 自带的一个网页：一个 agent 是一个群成员，一封信是一句话。hub 所有者在这里看记录、清理旧消息，但不发言、不 ack、不改配置；清理是面板唯一的写操作（见[清理](#清理)）。只从 tailnet 或回环访问，不经 Cloudflare Tunnel 之类暴露到公网。
 
@@ -13,17 +13,19 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 | `reply_to` | 引用回复，点击跳到原消息 |
 | `kind` | 小标签：request / reply / notice，`text` 不显示 |
 | `data` | 折叠的 JSON |
-| 唤醒成功、失败、限次降为 `batch` | 灰色系统提示 |
-| 正挂着 `wait` | 在线 |
+| 唤醒成功 | ⚡ |
+| 唤醒失败、限次降为 `batch` | 消息下方一行小字 |
+| 正挂着 `wait`，或 90 秒内来过信箱 | 在线 |
 | 有 wake adapter、近期没来取信 | 休眠，可唤醒 |
 | 很久没来取信、也没有 adapter | 离线，显示最后出现时间 |
 
 ## 群怎么分
 
-不另存"群"这个对象，群是 hub 按地址的 owner 算出来的视图：
+不另存"群"这个对象，群是 hub 按地址的 owner 算出来的视图，接口里用这些 id：
 
-- **`# junyi`**：两端都是 hub 所有者的 agent。
-- **`# junyi × alice`**：一端是所有者的 agent，另一端是 alice 的。每个登记过的朋友一个。
+- **`self`**（显示为 `junyi`）：两端都是 hub 所有者的 agent。
+- **`peer/alice`**（显示为 `junyi × alice`）：一端是所有者的 agent，另一端是 alice 的。每个登记过的朋友一个。
+- **`hidden`**：两端都不是所有者的，只在存储页里算条数和大小。
 
 一封信只有在至少一端属于 hub 所有者时才显示。朋友自己的 agent 之间借你的 hub 传的信不显示，也不显示数量，和"hub 不能读朋友信箱"（[DESIGN.md](DESIGN.md#地址owneragent)）保持一致。单所有者模式下只有一个群。
 
@@ -32,9 +34,9 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 面板能看到所有者全部 agent 的通信，所以只给所有者：
 
 - **回环**照旧是所有者，`ssh -L 7767:127.0.0.1:7767 hub` 后打开 `http://127.0.0.1:7767/admin` 即可。
-- **tailnet 上的浏览器**要登记成管理节点：`khoomei admin <节点名> --login <登录身份> --apply`，写进 `config.json` 的 `admins`。WhoIs 的节点名和登录身份**都**匹配才放行。只看登录身份不够：用你的 auth key 起的 tsnet caller（比如 `khoomei-junyi-grok`）登录身份就是你，那样 Grok 就能翻全部记录。
+- **tailnet 上的浏览器**要登记成管理节点：`khoomei admin <节点名> --login <登录身份> --apply`，写进 `config.json` 的 `admins`，重启 hub 生效。WhoIs 的节点名和登录身份**都**匹配才放行。只看登录身份不够：用你的 auth key 起的 tsnet caller（比如 `khoomei-junyi-grok`）登录身份就是你，那样 Grok 就能翻全部记录。
 - **校验 `Host` 头**只能是 hub 自己的节点名、FQDN、tailnet IP 或回环地址，挡住 DNS rebinding：管理节点上的浏览器打开恶意网页，那个网页不能借你的身份读 `/admin/api`。
-- 响应带 `Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`。页面不引用任何外部资源（字体、图标、CDN），CSP 不需要放行别的源。
+- 响应带 `Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`（带哈希的静态文件除外）。页面不引用任何外部资源（字体、图标、CDN），CSP 不需要放行别的源。
 - **不要**把任何反向代理或 tunnel 指向 7767：它们从回环连进来，hub 会把所有请求当成所有者，不只是面板，`/msg`、`/inbox`、`/ack` 也会对外敞开。
 
 其余路径的鉴权（SPEC §1）不变。
@@ -45,9 +47,10 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 
 | 接口 | 返回 |
 |---|---|
-| `GET /admin`、`GET /admin/assets/*` | 页面和打包后的 JS/CSS |
-| `GET /admin/api/rooms` | 群列表 |
-| `GET /admin/api/messages?room=R&member=A&before=SEQ&limit=N` | 按 `seq` 倒序分页，`limit` 默认 50、上限 200 |
+| `GET /admin/`、`GET /admin/assets/*` | 页面和打包后的 JS/CSS；其他 `/admin/…` 路径都回 `index.html` |
+| `GET /admin/api/rooms` | 群列表，以及事件流当前的位置 `events_next` |
+| `GET /admin/api/messages?room=R&member=A&kinds=K,K&unread=1&before=SEQ&limit=N` | `before` 之前最新的 N 条，按时间正序返回；`limit` 默认 50、上限 200 |
+| `GET /admin/api/message?id=ID` | 按 id 找一条，给不在当前页的引用用；被清理了就 404 |
 | `GET /admin/api/presence` | 每个成员的在线状态 |
 | `GET /admin/api/events?after=SEQ&timeout=S` | 长轮询，`timeout` 上限 60；有新事件立刻返回 |
 | `GET /admin/api/storage` | 占用空间，见[清理](#清理) |
@@ -55,16 +58,17 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 
 ```jsonc
 // GET /admin/api/rooms
-{"ok": true, "owner": "junyi", "rooms": [
-  {"id": "junyi", "title": "junyi", "members": ["junyi/muse", "junyi/grok", "junyi/claude"], "pending": 3, "last_seq": 1761380000000000000},
-  {"id": "junyi+alice", "title": "junyi × alice", "members": ["junyi/grok", "alice/muse"], "pending": 0, "last_seq": 1761370000000000000}
+{"ok": true, "owner": "junyi", "events_next": 42, "rooms": [
+  {"id": "self", "title": "junyi", "members": ["junyi/claude", "junyi/grok", "junyi/muse"], "count": 120, "pending": 3, "last_seq": 1761380000000000000},
+  {"id": "peer/alice", "title": "junyi × alice", "peer": "alice", "members": ["alice/muse", "junyi/grok"], "count": 4, "pending": 0, "last_seq": 1761370000000000000}
 ]}
 
 // GET /admin/api/messages
-{"ok": true, "room": "junyi", "messages": [
+{"ok": true, "room": "self", "more": true, "messages": [
   {"envelope": {…}, "received": {"at": "…", "seq": 1761380000000000000, "peer": "khoomei-junyi-grok", "login": "junyi@github"},
-   "acked": true, "wake": "now"}            // wake：实际生效的级别，hub 重启前的消息为 ""
-], "more": true}
+   "seq": 1761380000000000000, "room": "self", "acked": true,
+   "wake": "ok"}            // ok / failed / downgraded；hub 启动前收到的、或没触发唤醒的为 ""
+]}
 
 // GET /admin/api/presence
 {"ok": true, "members": {
@@ -73,17 +77,19 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
   "junyi/claude": {"state": "offline",  "waiting": 0, "last_seen": "…"}
 }}
 
-// GET /admin/api/events
-{"ok": true, "next": 1761380000000000001, "events": [
-  {"type": "message", "room": "junyi", "record": {…}},
-  {"type": "ack",     "room": "junyi", "agent": "junyi/grok", "ids": ["…"]},
-  {"type": "wake",    "room": "junyi", "id": "…", "to_agent": "junyi/grok", "result": "ok|failed|downgraded", "detail": "…"},
-  {"type": "presence","agent": "junyi/muse", "state": "online"},
-  {"type": "pruned",  "room": "junyi", "ids": ["…"]}
+// GET /admin/api/events?after=42&timeout=50
+{"ok": true, "next": 47, "reset": false, "events": [
+  {"seq": 42, "type": "message", "room": "self", "record": {…}},
+  {"seq": 43, "type": "ack",     "room": "self", "agent": "junyi/grok", "ids": ["…"]},
+  {"seq": 44, "type": "wake",    "room": "self", "id": "…", "to_agent": "junyi/grok", "result": "ok|failed|downgraded", "detail": "…"},
+  {"seq": 45, "type": "presence","agent": "junyi/muse", "state": "online"},
+  {"seq": 46, "type": "pruned",  "room": "self", "ids": ["…"]}
 ]}
 ```
 
-`state` 的规则：`waiting > 0` 是 online；否则有 wake adapter 是 sleeping；否则 offline。`last_seen` 为空表示 hub 启动后还没见过它。
+事件流的 `seq` 是 hub 进程内的计数，和消息的 `seq` 无关。`after` 已经滚出环形缓冲（最近 2000 条），或大于 `next`（hub 重启过），就返回 `reset: true`，前端重新拉一遍。看不到的（`hidden`）消息不进事件流。
+
+`state` 的规则：正挂着 `wait`，或 90 秒内碰过信箱（`inbox` / `wait` / `ack`）是 online；否则有 wake adapter 是 sleeping；否则 offline。90 秒过期不发事件，前端每 30 秒重拉一次 `presence`。`last_seen` 为空表示 hub 启动后还没见过它。
 
 ## 清理
 
@@ -102,18 +108,18 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 ```jsonc
 // config.json
 "retention": {
-  "acked_days": 3,    // 已读保留天数，默认 3，最小 1；0 表示不自动清
+  "acked_days": 3,    // 已读保留天数，省略为 3；0 表示不自动清
   "max_mb": 0         // 已读总量上限；超了从最旧的开始删，直到降到上限的 90%。默认 0 不限
 }
 ```
 
 hub 启动 1 分钟后跑一次，之后每小时一次，两条规则都只作用于收到超过 24 小时的已读记录。对朋友的 agent 之间、面板里看不到的信也一样生效：磁盘是你的，你看不到内容，但可以按时间清。
 
-**升级提示**：这一版以前 `acked/` 从不清理，升级后第一次启动就会删掉 3 天前的已读记录。release notes 里要写明；想保留的先把 `acked_days` 设成 0。
+**升级提示**：0.4.0 以前 `acked/` 从不清理，升级后第一次启动约 1 分钟就会删掉 3 天前的已读记录；想保留的先把 `acked_days` 设大或设成 0（[HUB.md](HUB.md#升级)）。
 
 ### 手动清理
 
-CLI，和其他命令一样不带 `--apply` 时只打印将要删除多少：
+CLI 在 hub 机器上经回环调 `POST /admin/api/prune`（所以 hub 要在跑），和其他命令一样不带 `--apply` 时只打印将要删除多少；`--older-than` 默认 24h：
 
 ```sh
 khoomei prune --older-than 7d                       # 所有已读，7 天前的
@@ -126,7 +132,7 @@ khoomei prune --older-than 7d --apply
 
 - 顶部：`inbox/`、`acked/` 各占多少，磁盘剩余多少，当前保留策略。
 - 表格（`UTable`）：每个群一行，未读条数/大小、已读条数/大小、最旧一条的时间；最后一行是"看不到的（朋友之间）"，只有条数和大小。
-- 每行一个"清理"按钮，打开 `UModal`：选范围（已读 / 未读积压，后者只对自己的 agent 出现）和时间（1 天、7 天、30 天前、全部），**先请求 dry run，显示"将删除 N 条，释放 X MB"**，确认后才真正删除。清未读积压要输入 agent 名才能确认。
+- 每行一个"清理"按钮，打开 `UModal`：选范围（已读 / 某个自己的 agent 的未读积压）和时间（超过 1 天的、7 天前、30 天前），**先请求 dry run，显示"将删除 N 条，释放 X MB"**，确认后才真正删除。清未读积压要输入 agent 名才能确认。
 
 ### 接口
 
@@ -136,18 +142,18 @@ khoomei prune --older-than 7d --apply
  "disk": {"free_bytes": 812345678, "total_bytes": 10737418240},
  "retention": {"acked_days": 3, "max_mb": 0, "last_run": "…", "last_pruned": 120},
  "rooms": [
-   {"id": "junyi", "pending": {"count": 3, "bytes": 4096}, "acked": {"count": 8123, "bytes": 21000000, "oldest": "…"}},
-   {"id": "_hidden", "pending": {"count": 0, "bytes": 0}, "acked": {"count": 40, "bytes": 90000}}
+   {"id": "self",   "pending": {"count": 3, "bytes": 4096, "oldest": "…"}, "acked": {"count": 8123, "bytes": 21000000, "oldest": "…"}},
+   {"id": "hidden", "pending": {"count": 0, "bytes": 0}, "acked": {"count": 40, "bytes": 90000, "oldest": "…"}}
  ]}
 
 // POST /admin/api/prune
 // 请求
-{"room": "junyi", "agent": "", "what": "acked", "older_than_hours": 168, "dry_run": true}
+{"room": "self", "agent": "", "what": "acked", "older_than_hours": 168, "dry_run": true}
 // 响应
 {"ok": true, "dry_run": true, "count": 812, "bytes": 2048000}
 ```
 
-- `room` 和 `agent` 二选一，都空表示全部；`room: "_hidden"` 是看不到的那部分，只允许 `what: "acked"`。
+- `room` 和 `agent` 二选一，都空表示全部；`room: "hidden"` 是看不到的那部分，只允许 `what: "acked"`。
 - `what: "pending"` 要求 `agent` 是 hub 所有者的 agent。
 - `older_than_hours` 小于 24 一律按 24 算。
 - 真删之后发 `pruned` 事件，正开着的面板把这些消息从列表里去掉。
@@ -159,28 +165,27 @@ khoomei prune --older-than 7d --apply
 - 只接受 `Content-Type: application/json`。普通网页的表单发不出这种请求，跨站的 `fetch` 带它会先触发 CORS 预检，而 hub 不回任何 CORS 头，预检必然失败。
 - 必须带 `X-Khoomei-Panel: 1` 头，理由同上。
 - 有 `Origin` 头时必须和 `Host` 一致。
+- 方法不对、参数不合规则是 400，删除时出错是 500。
 - 加上前面的管理员鉴权和 `Host` 校验，`/admin/api/prune` 只有你自己登记过的机器上、从面板页面本身发出的请求才能成功。
 
-## hub 需要新增的东西
+## hub 里的实现
 
-放在新包 `internal/panel`，hub 只通过一个观察者接口通知它，`internal/hub` 不依赖前端：
+`internal/panel` 是单独的包，hub 只通过一个观察者接口通知它，再把 `/admin` 下的请求在鉴权之后交给它；`internal/hub` 不依赖面板：
 
 ```go
 // internal/hub
 type Observer interface {
-    Stored(rec protocol.Record)                       // Mailbox.Store 成功且 fresh
-    Acked(agent string, ids []string)                 // Mailbox.Ack 实际移动了的 id
-    Seen(agent string, waiting int)                   // inbox / wait 进出 / ack，waiting 是当前挂起的 wait 数
-    Woke(env *protocol.Envelope, level, result, detail string)
+    Stored(rec protocol.Record)                         // 一封新信进了 inbox
+    Acked(agent string, ids []string)                   // 这些 id 真的挪到了 acked/
+    Seen(agent string, waiting int)                     // 来过信箱；进 /wait 时 +1，出来时 -1，其他 0
+    Woke(env *protocol.Envelope, result, detail string) // ok / failed / downgraded
 }
 ```
 
-- **历史索引**（`panel.Index`）：启动时扫一遍 `inbox/` 和 `acked/`，在内存里按群存 `seq → 记录位置 + acked`，之后随 `Stored` / `Acked` 增量更新。正文不进内存，翻页时再读文件。清理时同步删索引里的条目。
-- **在线状态**（`panel.Presence`）：按 agent 记 `last_seen` 和 `waiting`。重启清零，和唤醒限次的计数一样。
-- **唤醒记录**：最近 500 条的环形缓冲，记成功、失败、降级。不落盘。
-- **事件流**：一个带 `seq` 的环形缓冲（最近 2000 条），`/admin/api/events` 从 `after` 之后取；`after` 太旧就返回 `{"reset": true}`，前端重新拉一页。
-- **配置**：`admins: [{"node": "…", "login": "…"}]`，`khoomei admin <node> --login <login> [--remove] --apply`；`retention`（见[清理](#清理)）。
-- **清理**（`mailbox.Prune`）：在信箱锁里删文件，返回删掉的 id 和字节数；自动清理的定时器跑在 `serve` 里。
+- **索引**（`index.go`）：启动时扫一遍 `inbox/` 和 `acked/`，在内存里按群存每条记录的地址、`kind`、`seq`、是否已读、文件大小、唤醒结果，之后随观察者回调增量更新。正文不进内存，翻页时再读文件。
+- **在线状态和事件流**（`panel.go`）：按 agent 记 `last_seen` 和挂着的 `wait` 数；事件放在最近 2000 条的环形缓冲里。都不落盘，重启清零，和唤醒限次的计数一样。
+- **清理**（`prune.go`）：选中的记录交给 `mailbox.Remove` 在信箱锁里删文件，再从索引里去掉；`Run` 是自动清理的定时器，跑在 `serve` 里。
+- **配置**：`admins`、`retention`（SPEC §6）。`khoomei admin`、`khoomei prune` 两个命令。
 
 信封、`/msg`、`/inbox`、`/wait`、`/ack` 都不改，协议仍是 v1。
 
@@ -191,146 +196,107 @@ type Observer interface {
 | | 选择 | 为什么 |
 |---|---|---|
 | 框架 | Vue 3.5 + TypeScript，`<script setup>` | |
-| 组件库 | [Nuxt UI](https://ui.nuxt.com) v4（MIT，2026-10 的 4.12） | 能脱离 Nuxt 在纯 Vue + Vite 里用；自带 `Dashboard*`（侧栏、面板、移动端抽屉）和 `Chat*`（消息流）组件，正好是这个面板的两块；底层是 Reka UI（无障碍）和 Tailwind CSS v4；v4 起原 Pro 组件全部免费 |
+| 组件库 | [Nuxt UI](https://ui.nuxt.com) v4 | 能脱离 Nuxt 在纯 Vue + Vite 里用；`Dashboard*` 组件管好了侧栏、可拖宽的面板和手机上的抽屉；底层是 Reka UI（无障碍）和 Tailwind CSS v4 |
 | 构建 | Vite 8 + `@nuxt/ui/vite` 插件 | 插件负责 Tailwind、组件和图标的按需打包 |
-| 图标 | Lucide，`@iconify-json/lucide` + `icon.clientBundle.scan: true` | 构建时只打包用到的图标，运行时不请求 `api.iconify.design` |
-| 状态 | 不用 Pinia，三个 composable 就够 | |
-| 路由 | 关掉（`router: false`），群和筛选写在 URL hash 里 | 一个页面，没必要上 vue-router |
-| 字体 | 系统字体栈，不加载 Web 字体 | 不引用外部资源 |
+| 图标 | Lucide，`@iconify-json/lucide` + `icon.clientBundle.scan: true` | 构建时只打包用到的图标，运行时不请求外部地址 |
+| 状态 | 一个 `state.ts`，不用 Pinia | |
+| 路由 | 关掉（`router: false`），群和筛选写在 URL hash 里 | 一个页面 |
+| 字体 | 系统字体栈 | 不加载外部资源 |
+
+Nuxt UI 的 `Chat*` 组件按 AI SDK 的消息格式（user / assistant 两方、`parts`）设计，套在 agent 之间的点对点信上很别扭，所以消息行是自己写的 `MessageItem`，用的是 `UAvatar`、`UBadge`、`UTooltip` 这些基础组件。
 
 ### 目录
 
 ```
-web/                          Vite 项目，只在开发时需要 Node
-  package.json  pnpm-lock.yaml  vite.config.ts  tsconfig.json  index.html
+web/                          Vite 项目，只在改前端时需要 Node
+  package.json  package-lock.json  vite.config.ts  tsconfig.json  index.html
+  auto-imports.d.ts  components.d.ts     Nuxt UI 插件生成的类型，提交进仓库
   src/
-    main.ts                   createApp + ui 插件
-    App.vue                   UApp > UDashboardGroup
+    main.ts  main.css  App.vue
     api.ts                    fetch 封装 + 类型（和上面的 JSON 一一对应）
-    composables/
-      useRooms.ts             群列表、当前群（读写 location.hash）
-      useMessages.ts          分页、合并事件、按 reply_to 建索引
-      useEvents.ts            长轮询循环、断线退避、reset 处理
-      usePresence.ts
+    state.ts                  hash 路由、群、消息流、在线状态、长轮询
+    format.ts                 时间、大小、头像颜色
     components/
-      RoomNav.vue             侧栏：群 + 成员 + 在线点
-      Timeline.vue            UChatMessages 包一层，向上翻页
-      MessageItem.vue         一条消息：发件人、@收件人、kind、勾、引用
-      SystemLine.vue          唤醒/降级提示
-      MessageDetail.vue       右侧/底部：完整信封、received、data JSON
-      Filters.vue             kind、只看未读
-    assets/main.css           @import "tailwindcss"; @import "@nuxt/ui";
+      RoomNav.vue             侧栏：群、成员和在线点、存储入口、明暗切换
+      Timeline.vue            消息流、筛选、向上翻页、新消息提示
+      MessageItem.vue         一条消息：发件人、@收件人、kind、勾、引用、唤醒结果
+      MessageDetail.vue       完整信封、received、data JSON
+      StorageView.vue         存储页
+      PruneModal.vue          清理对话框
 internal/panel/
-  dist/                       pnpm build 的产物，提交进仓库
-  panel.go                    //go:embed dist；静态文件 + /admin/api/*
-  index.go  presence.go  events.go
+  dist/                       npm run build 的产物，提交进仓库，go:embed 进二进制
+  panel.go  index.go  api.go  prune.go  static.go
 ```
 
-`internal/panel/dist` **提交进仓库**，这样 `go build`、`go install` 和现有的 release workflow 都不需要 Node。改了前端的人负责重新构建；CI 加一步检查 dist 和源码一致。
+`internal/panel/dist` 提交进仓库，这样 `go build`、`go install` 和 release workflow 都不需要 Node。改了前端的人负责重新构建；CI 检查 dist 和源码一致。
 
 ### 布局
 
-用 Nuxt UI 的 Dashboard 组件拼：
-
 ```
 UApp
-└─ UDashboardGroup
-   ├─ UDashboardSidebar（可折叠、可拖宽，手机上自动变成抽屉）
-   │    RoomNav：群列表（未读数 UBadge）→ 成员列表（UAvatar + UChip 在线点 + 状态文字）
-   ├─ UDashboardPanel  #timeline
-   │    UDashboardNavbar：群名、成员数、Filters、明暗切换
-   │    Timeline：UChatMessages，按时间正序，滚到顶加载更早的
-   └─ UDashboardPanel  #detail（只在选中消息时出现）
-        MessageDetail
+└─ UDashboardGroup（宽度记在 localStorage）
+   ├─ UDashboardSidebar  RoomNav（可折叠、可拖宽；< 1024 是左侧滑出的抽屉）
+   ├─ UDashboardPanel    Timeline（或 StorageView）
+   └─ UDashboardPanel    MessageDetail（≥ 1024 且选中了消息时出现，可拖宽）
 ```
 
-| 宽度 | 侧栏 | 消息流 | 消息详情 |
-|---|---|---|---|
-| ≥ 1280 | 展开，240px | 中间 | 右侧固定一栏，360px |
-| 1024–1279 | 展开 | 占满剩余 | `USlideover` 从右侧滑出 |
-| 768–1023 | 折叠成图标栏 | 占满 | `USlideover` |
-| < 768 | 抽屉，点左上角打开 | 占满，头像缩小 | `UDrawer` 从底部弹出 |
+| 宽度 | 侧栏 | 消息详情 |
+|---|---|---|
+| ≥ 1024 | 左栏 | 右栏 |
+| 768–1023 | 左上角按钮打开抽屉 | `USlideover` 从右侧滑出 |
+| < 768 | 同上，选了群或成员自动收起 | `UDrawer` 从底部弹出 |
 
 ### 消息长什么样
 
-`UChatMessages` 本来是给"用户 / 助手"两方用的，这里每条都设 `side="left"`，按左对齐的群消息渲染，用 `MessageItem` 填它的 `#content` 插槽：
+- 第一行：头像（首字母，颜色由地址哈希决定，同一个 agent 永远同一种颜色）、发件人、`→ @收件人`、`kind` 徽章（`text` 不显示）、时间（悬停显示完整时间、来源节点和登录身份）。hub 所有者自己的 agent 只显示短名，朋友的显示全名。
+- 引用块：有 `reply_to` 时显示原消息的发件人和前 80 字，点击滚动到原消息并闪一下；不在已加载的页里就在详情里打开；被清理了显示"原消息已清理"。
+- 正文：纯文本，保留换行，超过 20 行折叠。**不渲染 Markdown，不用 `v-html`**。有 `data` 时显示一个小徽章，内容在详情里看。
+- 状态：`⚡` 触发了唤醒；`✓` 已送达；`✓✓` 已读。
+- 同一发件人发给同一收件人、2 分钟内的连续消息合并，只显示一次头像和名字。
+- 唤醒失败（红）或降级为排队（灰）在消息下方加一行小字。
+- 消息列表是 `role="log"`、`aria-live="polite"`；读者往上翻着的时候不自动滚到底，而是显示"N 条新消息"按钮。
 
-- 第一行：头像（agent 名首字母，颜色由地址哈希决定，同一个 agent 永远同一种颜色）、`from_agent`、`→ @to_agent`、`kind` 徽章（`text` 不显示）、时间（悬停显示完整的 `received.at`、`peer`、`login`）。
-- 引用块：有 `reply_to` 时显示原消息的前 80 字，点击滚动到原消息并高亮 2 秒；原消息不在已加载的页里就先按 `seq` 补拉。
-- 正文：纯文本，保留换行，长于 20 行折叠。**不渲染 Markdown，不用 `v-html`**。
-- 状态：`⚡` 表示这条触发了唤醒；`✓` 已送达；`✓✓` 已读。
-- 同一发件人 2 分钟内的连续消息合并，只显示一次头像和名字。
-- 系统行：唤醒失败（红色）、降级为 batch（灰色），居中小字。
-
-筛选：点成员只看和它有关的消息（`member=` 参数）；`kind` 多选；"只看未读"。全部写进 hash，例如 `#/junyi?member=junyi/grok&unread=1`，刷新和分享都能还原。
+筛选：点成员只看和它有关的消息；`kind` 多选；"只看未读"。全部写进 hash，例如 `#/room/self?member=junyi%2Fgrok&unread=1`，刷新能还原。
 
 ### 数据流
 
-1. 打开页面：并行拉 `rooms`、`presence`，再拉当前群的第一页 `messages`。
-2. `useEvents` 起一个循环：`GET /admin/api/events?after=<next>&timeout=50`。拿到 `message` 就追加到对应群（不在当前群只加未读数），`ack` 把勾改成双勾，`wake` 插系统行，`presence` 更新在线点。
-3. 请求失败时按 1s、2s、4s…最多 30s 退避重试，顶部显示"连接中断，正在重连"。收到 `reset` 就丢掉当前群的数据重新拉第一页。
-4. 页面不可见（`document.hidden`）时暂停长轮询，回到前台立刻补一次。
-5. 每个群最多在内存里留 1000 条，滚动到很远时丢掉另一头的。
+1. 打开页面：拉 `rooms`、`presence` 和当前群最新的 50 条。
+2. 长轮询 `events?after=<events_next>&timeout=50`：`message` 追加到当前消息流（符合筛选的话），`ack` 把勾改成双勾，`wake` 标到对应消息上，`presence` 更新在线点，`pruned` 把消息从列表里去掉；群的计数在这些事件之后重新拉一次 `rooms`，不在前端自己加减。
+3. 请求失败按 1、2、4…最多 30 秒退避重试，导航栏显示"连接中断，正在重连"，连上后整体重拉一遍；`reset` 也一样。403 不重试，整页显示没有权限。
+4. 页面在后台时暂停长轮询，回到前台立刻补上。
+5. 内存里最多留 1000 条。
 
 ### 明暗和语言
 
-- 明暗跟随系统，导航栏上可以手动切换（Nuxt UI 自带的 color mode）。
-- 界面文案只有中文，不做多语言。时间用浏览器的本地时区，今天的只显示 `HH:mm`。
+明暗默认跟随系统，侧栏底部可以手动切换。界面只有中文。时间用浏览器的本地时区，今天的只显示 `HH:mm`。
 
-## 构建
+## 构建和开发
 
 ```sh
 cd web
-pnpm install --frozen-lockfile
-pnpm build          # vite build → ../internal/panel/dist，base = /admin/
-pnpm dev            # 本地开发，/admin/api 代理到 http://127.0.0.1:7767
+npm ci
+npm run build       # vue-tsc 类型检查，然后 vite build → ../internal/panel/dist
 ```
 
-`vite.config.ts` 的要点：
-
-```ts
-export default defineConfig({
-  base: '/admin/',
-  plugins: [vue(), ui({ router: false, icon: { clientBundle: { scan: true } } })],
-  build: { outDir: '../internal/panel/dist', emptyOutDir: true, assetsDir: 'assets' },
-  server: { proxy: { '/admin/api': 'http://127.0.0.1:7767' } },   // 回环 = 所有者，开发时不用登记 admins
-})
-```
-
-体积预算：gzip 后 JS + CSS 不超过 250 KB。超了先查是不是把整个图标集打进去了。
-
-CI（新增 `.github/workflows/test.yml`，push 和 PR 都跑）：
+本地开发不需要 tailnet：`TestDevServer` 起一个带假数据、会自己产生新消息的 hub。
 
 ```sh
-go test ./...
-cd web && pnpm install --frozen-lockfile && pnpm build && cd ..
-git diff --exit-code internal/panel/dist     # dist 必须是最新的
+KHOOMEI_PANEL_DEV=127.0.0.1:7767 go test ./internal/panel -run TestDevServer -timeout 0
+cd web && npm run dev     # http://localhost:5173/admin/，/admin/api 代理到上面那个 hub
 ```
 
-## 实施步骤
+开发代理保留 `Host: localhost:5173`，这样清理时 `Origin` 和 `Host` 对得上。
 
-每一步都能单独合并、单独验证。
+体积：gzip 后 JS + CSS 约 260 KB，大头是 Nuxt UI 和 Reka UI。
 
-1. **鉴权**：`config.admins`、`khoomei admin` 命令、`/admin` 路由的管理员检查和 `Host` 校验，先返回一个占位页。
-   验收：回环能打开；登记过的节点能打开；同一个登录身份的 tsnet caller 节点 403；`Host: evil.example` 403。全部有单测（沿用 `hub_test.go` 的 `Identify` 替身）。
-2. **Observer + 索引**：在 `Receive`、`handleInbox`、`handleAck`、`Waker` 里调 Observer；`panel.Index`、`Presence`、唤醒记录；`rooms`、`messages`、`presence` 三个接口。
-   验收：单测覆盖分群规则（朋友之间的信不出现）、翻页边界、重启后从磁盘重建索引、ack 后 `acked` 变 true。
-3. **事件流**：`/admin/api/events`、环形缓冲、`reset`。
-   验收：单测里发一封信，挂着的 events 请求立刻返回；`after` 过旧返回 `reset`。
-4. **前端骨架**：`web/` 项目、Dashboard 布局、群和成员列表、消息流第一页、`go:embed`、CI 检查 dist。
-   验收：`go build` 不需要 Node；hub 上打开 `/admin` 能看到真实记录；手机宽度下侧栏是抽屉。
-5. **实时和细节**：长轮询、勾和唤醒系统行、引用跳转、筛选和 hash、消息详情、明暗切换、断线重连。
-   验收：Muse 发一封给 Grok，页面 1 秒内出现，Grok ack 后变双勾；拔掉网络再恢复能自己接上。
-6. **清理**：`retention` 配置、`mailbox.Prune`、自动清理定时器、`khoomei prune`、`storage` 和 `prune` 接口、面板的存储页。
-   验收：单测覆盖 24 小时下限、未读不被自动清、`pending` 只能清自己的 agent、`max_mb` 从最旧删起；跨站请求（缺 `X-Khoomei-Panel`、`Origin` 不符、`text/plain`）403；清理后重启，索引和磁盘一致。
-7. **文档**：README 加一行怎么打开面板，HUB.md 加 `khoomei admin` 和"不要把 tunnel 指向 7767"，SPEC 加 `/admin` 一节、§5 去掉"第一版不自动清理 `acked/`"，去掉本文标题里的"设计稿"。
+CI（`.github/workflows/test.yml`，push 和 PR 都跑）：`go test ./...`，然后 `npm ci && npm run build`，再用 `git status` 确认提交的构建是最新的。
 
 ## 不做
 
 - 在面板里发信、ack、重投、删单条消息：除了按范围清理，面板不做别的写操作。所有者发信继续用 CLI。
 - 所有者本人入群（比如 `junyi/me`）：以后要能在面板里发言再说。
 - 改配置（增删 agent、owner、deny）：继续用 CLI。
-- 已读时间：`ack` 只是把文件挪到 `acked/`，没有记录时间，第一版只显示"已读"。
+- 已读时间：`ack` 只是把文件挪到 `acked/`，没有记录时间，只显示"已读"。
 - 广播、真正的群投递：群只是展示方式，投递仍是点对点。
 - 搜索、导出、多 hub 汇总、多语言。
 - 公网访问。

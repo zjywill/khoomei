@@ -35,7 +35,7 @@ agent 用 **`owner/agent`** 两层地址寻址：`junyi/grok`、`alice/muse`。�
 ## 2. 接口
 
 ### `GET /health`
-不鉴权。`{"ok":true,"v":1,"version":"0.3.7","owner":"junyi"}`
+不鉴权。`{"ok":true,"v":1,"version":"0.4.0","owner":"junyi"}`
 
 ### `POST /msg`
 Body 是一封信封（§3），上限 256 KiB，`Content-Type: application/json`。
@@ -62,6 +62,9 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 
 ### `GET /agents`
 仅 `local`。返回登记表。
+
+### `/admin`
+hub 所有者的群聊面板和它的接口（`/admin/api/*`），详见 [docs/PANEL.md](docs/PANEL.md)。不属于 caller 协议，caller 永远用不到。准入：`local`，或节点名和登录身份都匹配 `admins` 里某一项的 peer；另外 `Host` 头必须是 hub 自己的名字或地址，否则 403。唯一的写操作是 `POST /admin/api/prune`。
 
 ## 3. 信封
 
@@ -122,7 +125,9 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 
 单所有者模式下没有 `<owner>` 这一层。
 
-`peer` 以 `WhoIs` 结果为准，不信信封；hub 所有者发出的记为 `hub`。第一版不自动清理 `acked/`。
+`peer` 以 `WhoIs` 结果为准，不信信封；hub 所有者发出的记为 `hub`。
+
+`acked/` 按 `retention` 自动清理（默认已读保留 3 天，每小时一次），`inbox/` 永不自动清理；收到不满 24 小时的记录任何方式都不删，因为去重靠文件还在（§2 `POST /msg` 的 200）。手动清理见 `khoomei prune` 和 [docs/PANEL.md](docs/PANEL.md#清理)。
 
 ## 6. 配置
 
@@ -143,9 +148,13 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
                    "wake_max": "now", "wake_rate": 6},
     "junyi/muse": {"node": "muse-vm.tail1234.ts.net"},
     "alice/muse": {"node": "alice-muse.tail9999.ts.net"}
-  }
+  },
+  "admins": [{"node": "junyi-mbp", "login": "junyi@github"}],
+  "retention": {"acked_days": 3, "max_mb": 0}
 }
 ```
+
+`admins`：哪些 tailnet 节点上的浏览器能打开 `/admin`，节点和登录身份都要对上。`retention.acked_days`：已读保留天数，省略为 3，`0` 不自动清；`retention.max_mb`：已读总量上限，`0` 不限。
 
 `agents` 的键是全名；写成裸名的键在保存和加载时按 `owner` 规范化。登记非本人所有者的 agent 前必须先 `owners` 里有这个所有者。
 

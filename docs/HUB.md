@@ -63,6 +63,8 @@ install -m 755 /tmp/khoomei /usr/local/bin/khoomei && systemctl restart khoomei
 
 配置、`tsnet/`、信箱都不动。先升 hub 再升 caller；协议 `v` 不变，hub 一直接受旧 caller。
 
+**升到 0.4.0 注意**：之前 `acked/` 从不清理，0.4.0 起已读消息默认只留 3 天，升级后 hub 启动约 1 分钟就会删掉 3 天前的已读记录。想多留，先在 `config.json` 里设 `"retention": {"acked_days": 30}`（`0` 表示不自动清）再重启。
+
 ## 迁移到另一台机器
 
 节点名要保持不变，Muse 等 caller 才不用改配置：
@@ -72,11 +74,24 @@ install -m 755 /tmp/khoomei /usr/local/bin/khoomei && systemctl restart khoomei
 3. 新机器 `systemctl start`。
 4. caller 侧：Muse 会把新 hub 当新设备，再弹一次批准卡；其他 caller 不用动。没 ack 的信不会搬过去。
 
+## 面板
+
+hub 自带一个只看记录、能清理旧消息的群聊面板（[PANEL.md](PANEL.md)），地址是 `http://khoomei-<handle>:7767/admin/`。只有 hub 所有者能开：
+
+- 在 hub 机器上，或 `ssh -L 7767:127.0.0.1:7767 <hub>` 之后打开 `http://127.0.0.1:7767/admin/`；
+- 在 tailnet 上你自己的电脑或手机上，先在 hub 上登记那台设备：`$K admin <设备的节点名> --login <你的 Tailscale 登录> --apply`，重启 hub。
+
+**不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：它们从回环连进来，hub 会把每个请求都当成所有者，不只是面板，收发信接口也一起敞开了。
+
 ## 常用命令（在 hub 机器上）
 
 ```sh
 $K doctor                      # 状态
 $K agent <name> --node … --apply
 $K owner alice --login alice@github --apply   # 朋友
+$K admin junyi-mbp --login junyi@github --apply   # 让这台设备能开面板
+$K prune --older-than 7d       # 看看能清掉多少；加 --apply 才删
 curl -s http://127.0.0.1:7767/health
 ```
+
+`agent` / `owner` / `admin` 改的是 `config.json`，`serve` 只在启动时读，改完 `systemctl restart khoomei`。

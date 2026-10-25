@@ -44,6 +44,30 @@ type OwnerSpec struct {
 	Login string `json:"login"`
 }
 
+// AdminSpec lets a browser on a tailnet node open the hub's panel (docs/PANEL.md). Both the node
+// and its login must match: a tsnet caller started with the owner's auth key carries the owner's login.
+type AdminSpec struct {
+	Node  string `json:"node"`
+	Login string `json:"login"`
+}
+
+// Retention is how long the hub keeps acknowledged records (docs/PANEL.md#清理). Pending records are never
+// pruned automatically, and nothing younger than MinPruneAge is pruned at all.
+type Retention struct {
+	AckedDays *int `json:"acked_days,omitempty"` // nil: DefaultAckedDays; 0: keep forever
+	MaxMB     int  `json:"max_mb,omitempty"`     // cap on acked/ in MiB; 0: no cap
+}
+
+const DefaultAckedDays = 3
+
+// AckedDaysOrDefault resolves the configured retention; a negative value counts as 0.
+func (r Retention) AckedDaysOrDefault() int {
+	if r.AckedDays == nil {
+		return DefaultAckedDays
+	}
+	return max(*r.AckedDays, 0)
+}
+
 type TSNet struct {
 	Dir         string `json:"dir,omitempty"`      // state directory; default <home>/tsnet
 	Hostname    string `json:"hostname,omitempty"` // node name on the tailnet; default khoomei-<owner>[-<agent>]
@@ -66,6 +90,8 @@ type Config struct {
 	Policy    Policy                `json:"policy"`
 	Owners    map[string]*OwnerSpec `json:"owners,omitempty"` // hub: other people whose agents may connect
 	Agents    map[string]*AgentSpec `json:"agents"`           // hub: keyed by full address once Owner is set
+	Admins    []AdminSpec           `json:"admins,omitempty"` // hub: nodes whose browsers may open the panel
+	Retention Retention             `json:"retention"`        // hub: automatic pruning of acked records
 
 	Home string `json:"-"`
 	Path string `json:"-"`
