@@ -35,7 +35,7 @@ agent 用 **`owner/agent`** 两层地址寻址：`junyi/grok`、`alice/muse`。�
 ## 2. 接口
 
 ### `GET /health`
-不鉴权。`{"ok":true,"v":1,"version":"0.4.1","owner":"junyi"}`
+不鉴权。`{"ok":true,"v":1,"version":"0.5.0","owner":"junyi","features":["blob"]}`。`features` 列出可选能力，0.5 之前的 hub 没有这个字段。
 
 ### `POST /msg`
 Body 是一封信封（§3），上限 256 KiB，`Content-Type: application/json`。
@@ -63,6 +63,20 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 ### `GET /agents`
 仅 `local`。返回登记表。
 
+### `PUT /blob?agent=NAME`
+上传一个附件，请求体是文件的原始字节，`Content-Length` 必填。`agent` 按 §1 判定。可带 `X-Khoomei-SHA256`，hub 收完比对。
+
+| 状态 | 含义 |
+|---|---|
+| 201 | 存好了：`{"ok":true,"sha256":"…","size":…,"duplicate":false}` |
+| 200 | 同样内容已经在 hub 上，`duplicate:true`；这个 agent 也记为上传者 |
+| 400 / 403 / 411 | 哈希不符或长度不足 / 身份不符 / 没有 `Content-Length` |
+| 413 | 超过 `blob.max_mb` |
+| 507 | 磁盘剩余低于 `blob.min_free_mb` |
+
+### `GET` / `HEAD /blob/<sha256>?agent=NAME[&name=…]`
+`agent` 按 §1 判定后，还必须是这个文件的**当事人**：上传者，或某封附带它的信的 `from_agent` / `to_agent`。否则一律 404，不暴露文件是否存在。响应是 `application/octet-stream` 附件（`name` 只用作下载文件名），支持 `Range` 和 `ETag`。
+
 ### `/admin`
 群聊面板和它的接口（`/admin/api/*`），详见 [docs/PANEL.md](docs/PANEL.md)。不属于 caller 协议，caller 永远用不到。准入和其他接口的身份一步相同（`local` 或任一 tailnet peer，`policy.deny` 照旧），不再按 agent 判定；另外 `Host` 头必须是 hub 自己的名字或地址，否则 403。唯一的写操作是 `POST /admin/api/prune`。
 
@@ -79,7 +93,8 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
   "text": "大家在讨论什么？哪些和我的项目有关？",
   "reply_to": "…",
   "wake": "now",
-  "data": {"any": "json"}
+  "data": {"any": "json"},
+  "files": [{"sha256": "9f86d0…", "name": "report.pdf", "size": 182044, "type": "application/pdf"}]
 }
 ```
 
@@ -90,10 +105,11 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 | `from_agent` / `to_agent` | 是 | 地址，`owner/agent` 或裸名（§0）。hub 存储前把裸名规范化为全名 |
 | `ts` | 是 | UTC，`YYYY-MM-DDTHH:MM:SSZ` |
 | `kind` | 否 | ≤32 字符的短标签，默认 `text`。约定：`text`、`request`、`reply`、`notice` |
-| `text` | 条件 | 正文。`text`（去首尾空白后非空）和 `data` 至少要有一个，否则 400 `empty message` |
+| `text` | 条件 | 正文。`text`（去首尾空白后非空）、`data`、`files` 至少要有一个，否则 400 `empty message` |
 | `reply_to` | 否 | 回复哪封信的 `id` |
 | `wake` | 否 | 发件方**希望**的提醒级别：`now` / `batch`（默认）/ `none` |
 | `data` | 条件 | 任意 JSON，结构化负载。见 `text` |
+| `files` | 条件 | 附件引用，最多 16 个。每个：`sha256`（64 位小写十六进制）、`name`（1–255 字符，不含 `/` `\` 和控制字符，只是标签）、`size`（必须和 hub 上的一致）、`type`（可选，MIME 提示）。每个文件必须已经在 hub 上，而且 `from_agent` 是它的当事人（自己上传的，或收到过的），否则 400 `unknown blob`。详见 [docs/FILES.md](docs/FILES.md) |
 
 **出现其他字段一律 400。**
 
@@ -106,7 +122,7 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 
 实际级别为 `now` 且 `to_agent` 配置了 wake adapter 时，异步调用适配器：
 
-- `{"type":"webhook","url_file":…,"secret_file":…}`：`POST url`，`Authorization: Bearer <secret>`，body 是摘要 `{"id","from_agent","to_agent","kind","preview"}`（preview 最多 200 字符）。
+- `{"type":"webhook","url_file":…,"secret_file":…}`：`POST url`，`Authorization: Bearer <secret>`，body 是摘要 `{"id","from_agent","to_agent","kind","preview","files"}`（preview 最多 200 字符；`files` 只在有附件时出现，每项 `{"name","size"}`）。
 - `{"type":"exec","argv":[…]}`：运行 argv，环境变量 `KHOOMEI_MSG_ID`、`KHOOMEI_TO_AGENT`，stdin 为同样的摘要。
 
 唤醒失败只记日志，消息仍在信箱。**唤醒不等于处理**；agent 醒来后自己 `inbox` → 干活 → `send --reply-to` → `ack`。
@@ -121,13 +137,15 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
   tsnet/                              内嵌节点的状态
   inbox/<owner>/<agent>/<id>.json     {"envelope": …, "received": {"at", "seq", "peer", "login"}}
   acked/<owner>/<agent>/<id>.json
+  blobs/<前两位>/<sha256>.bin         附件内容
+  blobs/<前两位>/<sha256>.json        {"size","type","uploaders","parties","first_seen"}
 ```
 
 单所有者模式下没有 `<owner>` 这一层。
 
 `peer` 以 `WhoIs` 结果为准，不信信封；hub 所有者发出的记为 `hub`。
 
-`acked/` 按 `retention` 自动清理（默认已读保留 3 天，每小时一次），`inbox/` 永不自动清理；收到不满 24 小时的记录任何方式都不删，因为去重靠文件还在（§2 `POST /msg` 的 200）。手动清理见 `khoomei prune` 和 [docs/PANEL.md](docs/PANEL.md#清理)。
+`acked/` 按 `retention` 自动清理（默认已读保留 3 天，每小时一次），`inbox/` 永不自动清理；收到不满 24 小时的记录任何方式都不删，因为去重靠文件还在（§2 `POST /msg` 的 200）。手动清理见 `khoomei prune` 和 [docs/PANEL.md](docs/PANEL.md#清理)。附件跟着最后一封附带它的信一起删；上传后一天还没有信附带它的也删。
 
 ## 6. 配置
 
@@ -149,11 +167,12 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
     "junyi/muse": {"node": "muse-vm.tail1234.ts.net"},
     "alice/muse": {"node": "alice-muse.tail9999.ts.net"}
   },
-  "retention": {"acked_days": 3, "max_mb": 0}
+  "retention": {"acked_days": 3, "max_mb": 0},
+  "blob": {"max_mb": 25, "min_free_mb": 500}
 }
 ```
 
-`retention.acked_days`：已读保留天数，省略为 3，`0` 不自动清；`retention.max_mb`：已读总量上限，`0` 不限。
+`retention.acked_days`：已读保留天数，省略为 3，`0` 不自动清；`retention.max_mb`：已读总量上限，`0` 不限。`blob.max_mb`：单个附件上限，省略为 25；`blob.min_free_mb`：磁盘剩余低于它就拒收附件，省略为 500。
 
 `agents` 的键是全名；写成裸名的键在保存和加载时按 `owner` 规范化。登记非本人所有者的 agent 前必须先 `owners` 里有这个所有者。
 
@@ -169,4 +188,4 @@ caller 端：`{"role":"caller","owner":"alice","agent":"muse","hub":"khoomei-jun
 
 ## 8. 刻意不做
 
-文件传输、请求生命周期状态、hub 之间互相转发、跨 hub 的全局身份（地址只在一个 hub 内有意义）、OAuth、任何公网暴露、对系统 tailscaled 的依赖。信封留了 `kind` 和 `data` 给上层约定，没留别的扩展口。
+请求生命周期状态、hub 之间互相转发、跨 hub 的全局身份（地址只在一个 hub 内有意义）、OAuth、任何公网暴露、对系统 tailscaled 的依赖。信封留了 `kind` 和 `data` 给上层约定；`files` 是 0.5 加的，旧 hub 会按"未知字段一律 400"拒收，所以 hub 先升级，caller 发附件前看 `/health` 的 `features` 里有没有 `blob`。

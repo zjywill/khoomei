@@ -2,12 +2,15 @@ package panel
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/zjywill/khoomei/internal/hub"
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
@@ -21,6 +24,7 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/api/events", p.handleEvents)
 	mux.HandleFunc("GET /admin/api/storage", p.handleStorage)
 	mux.HandleFunc("POST /admin/api/prune", p.handlePrune)
+	mux.HandleFunc("GET /admin/api/blob/{sha}", p.handleBlob)
 	mux.HandleFunc("/admin/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"ok": false, "error": "no such api"})
 	})
@@ -252,4 +256,55 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(v)
+}
+
+// Images the panel will show inline, judged by sniffing the bytes, never by the sender's label.
+// SVG is not among them: it can carry script.
+var inlineImages = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
+
+// handleBlob serves an attachment of a message the panel shows; files only friends exchanged stay
+// hidden. ?inline=1 previews it when it is one of inlineImages, otherwise it is always a download.
+func (p *Panel) handleBlob(w http.ResponseWriter, r *http.Request) {
+	sha := r.PathValue("sha")
+	notFound := func() { writeJSON(w, 404, map[string]any{"ok": false, "error": "no such file"}) }
+	if !protocol.ValidSHA256(sha) || p.blobs == nil {
+		notFound()
+		return
+	}
+	p.mu.Lock()
+	visible := false
+	for _, e := range p.byKey {
+		if e.Room != RoomHidden && slices.Contains(e.Files, sha) {
+			visible = true
+			break
+		}
+	}
+	p.mu.Unlock()
+	if !visible {
+		notFound()
+		return
+	}
+	path := p.blobs.Path(sha)
+	name := r.URL.Query().Get("name")
+	if !protocol.ValidFileName(name) {
+		name = sha
+	}
+	if r.URL.Query().Get("inline") == "1" {
+		if typ := sniff(path); inlineImages[typ] {
+			hub.ServeBlob(w, r, path, sha, name, typ, false)
+			return
+		}
+	}
+	hub.ServeBlob(w, r, path, sha, name, "application/octet-stream", true)
+}
+
+func sniff(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := io.ReadFull(f, buf)
+	return http.DetectContentType(buf[:n])
 }

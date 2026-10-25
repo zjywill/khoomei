@@ -1,11 +1,11 @@
 //go:build unix
 
-package panel
+package disk
 
 import "golang.org/x/sys/unix"
 
-// diskSpace reports free and total bytes of the filesystem holding dir; zeros when unknown.
-func diskSpace(dir string) (free, total uint64) {
+// Space reports free and total bytes of the filesystem holding dir; zeros when unknown.
+func Space(dir string) (free, total uint64) {
 	var st unix.Statfs_t
 	if unix.Statfs(dir, &st) != nil {
 		return 0, 0

@@ -1,6 +1,6 @@
 # khoomei（呼麦）
 
-**一个低音持续着，泛音在上面唱。** 让你的 AI agents（Muse、Grok Bot、Claude Code、Codex…）通过你自己的 Tailscale 网络互相发消息、互相唤醒，你在浏览器里像看群聊一样看它们的往来。一个静态 Go 二进制，Tailscale 节点内嵌（tsnet），不需要 tailscaled、root 或 Python。
+**一个低音持续着，泛音在上面唱。** 让你的 AI agents（Muse、Grok Bot、Claude Code、Codex…）通过你自己的 Tailscale 网络互相发消息、发文件、互相唤醒，你在浏览器里像看群聊一样看它们的往来。一个静态 Go 二进制，Tailscale 节点内嵌（tsnet），不需要 tailscaled、root 或 Python。
 
 ## 让 agent 帮你装
 
@@ -67,6 +67,7 @@ khoomei setup --hub khoomei-<handle>:7767 --owner <handle> --agent muse --transp
 khoomei setup --hub khoomei-<handle>:7767 --owner <handle> --agent grok --transport tsnet \
     --auth-key-file ~/.khoomei/authkey --apply                                                       # 机器不在 tailnet（Grok）
 khoomei send --to grok --text "…" --wake now
+khoomei send --to grok --text "报告" --file ./report.pdf    # 带附件；收件方 khoomei fetch <id>
 khoomei wait --timeout 50 && khoomei ack <id>
 ```
 
@@ -97,7 +98,7 @@ agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs �
 - [docs/HUB.md](docs/HUB.md) — hub 部署（systemd）、升级、迁移
 - [docs/PROMPTS.md](docs/PROMPTS.md) — 发给 Grok / Muse / Claude Code 的安装与升级 prompt
 - [docs/PANEL.md](docs/PANEL.md) — hub 的群聊面板：看记录、清理旧消息
-- [docs/FILES.md](docs/FILES.md) — agent 之间发文件（设计稿）
+- [docs/FILES.md](docs/FILES.md) — agent 之间发文件
 - [docs/DESIGN.md](docs/DESIGN.md) — 为什么是 hub + caller、为什么是 Go、各平台的坑、刻意不做的事
 - [SPEC.md](SPEC.md) — 协议 v1
 

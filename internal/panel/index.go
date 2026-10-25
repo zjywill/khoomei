@@ -21,7 +21,8 @@ type entry struct {
 	Room               string
 	Acked              bool
 	Size               int64
-	Wake               string // "", ok, failed or downgraded; only known for messages since the hub started
+	Wake               string   // "", ok, failed or downgraded; only known for messages since the hub started
+	Files              []string // sha256 of each attachment
 }
 
 func (e *entry) key() string { return e.To + "\x00" + e.ID }
@@ -52,6 +53,9 @@ func (p *Panel) add(e *entry) {
 		return
 	}
 	p.byKey[e.key()] = e
+	for _, sha := range e.Files {
+		p.refs[sha]++
+	}
 	list := p.rooms[e.Room]
 	i := sort.Search(len(list), func(i int) bool { return list[i].Seq > e.Seq })
 	list = append(list, nil)
@@ -63,6 +67,13 @@ func (p *Panel) add(e *entry) {
 // drop removes the given entries from the index; the caller holds p.mu.
 func (p *Panel) drop(gone map[string]bool) {
 	for k := range gone {
+		if e := p.byKey[k]; e != nil {
+			for _, sha := range e.Files {
+				if p.refs[sha]--; p.refs[sha] <= 0 {
+					delete(p.refs, sha)
+				}
+			}
+		}
 		delete(p.byKey, k)
 	}
 	for room, list := range p.rooms {
@@ -85,6 +96,10 @@ func newEntry(rec protocol.Record, room string, acked bool, size int64) *entry {
 			seq = t.UnixNano()
 		}
 	}
-	return &entry{ID: env.ID, From: env.FromAgent, To: env.ToAgent, Kind: env.EffectiveKind(),
+	e := &entry{ID: env.ID, From: env.FromAgent, To: env.ToAgent, Kind: env.EffectiveKind(),
 		Seq: seq, Room: room, Acked: acked, Size: size}
+	for _, f := range env.Files {
+		e.Files = append(e.Files, f.SHA256)
+	}
+	return e
 }

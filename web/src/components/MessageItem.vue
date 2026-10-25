@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watchEffect } from 'vue'
-import type { Rec } from '../api'
-import { avatarClass, fullTime, initials, kindTone, shortName, shortTime } from '../format'
+import { blobURL, canPreview, type Rec } from '../api'
+import { avatarClass, bytes, fullTime, initials, kindTone, shortName, shortTime } from '../format'
 import { lookup, owner } from '../state'
 
 const props = defineProps<{ rec: Rec; grouped: boolean; selected: boolean }>()
@@ -96,6 +96,31 @@ const wakeLine = computed(() => {
               @click="expanded = !expanded"
             />
             <UBadge v-if="env.data !== undefined" label="data" icon="i-lucide-braces" color="neutral" variant="outline" size="sm" class="mt-1" />
+            <ul v-if="env.files?.length" class="mt-1.5 flex flex-wrap gap-2" aria-label="附件">
+              <li v-for="f in env.files" :key="f.sha256">
+                <a
+                  v-if="canPreview(f)"
+                  :href="blobURL(f, true)"
+                  target="_blank"
+                  rel="noopener"
+                  class="block overflow-hidden rounded-md border border-default hover:border-accented"
+                  :title="`${f.name} · ${bytes(f.size)}`"
+                >
+                  <img :src="blobURL(f, true)" :alt="f.name" loading="lazy" class="h-40 w-auto max-w-60 object-contain" />
+                </a>
+                <a
+                  v-else
+                  :href="blobURL(f)"
+                  :download="f.name"
+                  class="flex max-w-72 items-center gap-2 rounded-md border border-default px-2.5 py-1.5 text-sm hover:border-accented hover:bg-elevated/50"
+                >
+                  <UIcon name="i-lucide-file" class="size-4 shrink-0 text-muted" aria-hidden="true" />
+                  <span class="truncate">{{ f.name }}</span>
+                  <span class="shrink-0 text-xs text-dimmed">{{ bytes(f.size) }}</span>
+                  <UIcon name="i-lucide-download" class="size-3.5 shrink-0 text-muted" aria-hidden="true" />
+                </a>
+              </li>
+            </ul>
           </div>
 
           <div class="flex shrink-0 items-center gap-1 pb-0.5 text-dimmed">

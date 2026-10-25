@@ -39,6 +39,7 @@ const columns: TableColumn<Row>[] = [
   { accessorKey: 'id', header: '群', cell: ({ row }) => roomTitle(row.original.id) },
   { id: 'pending', header: '未读', cell: ({ row }) => `${row.original.pending.count} 条 · ${bytes(row.original.pending.bytes)}` },
   { id: 'acked', header: '已读', cell: ({ row }) => `${row.original.acked.count} 条 · ${bytes(row.original.acked.bytes)}` },
+  { id: 'files', header: '附件', cell: ({ row }) => (row.original.files.count ? `${row.original.files.count} 个 · ${bytes(row.original.files.bytes)}` : '—') },
   {
     id: 'oldest',
     header: '最旧的已读',
@@ -83,7 +84,7 @@ const totals = computed(() => {
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
 
       <template v-if="storage && totals">
-        <div class="grid gap-3 sm:grid-cols-3">
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <UCard>
             <p class="text-xs text-muted">未读（inbox/）</p>
             <p class="mt-1 text-xl font-semibold">{{ bytes(totals.pending) }}</p>
@@ -91,6 +92,11 @@ const totals = computed(() => {
           <UCard>
             <p class="text-xs text-muted">已读（acked/）</p>
             <p class="mt-1 text-xl font-semibold">{{ bytes(totals.acked) }}</p>
+          </UCard>
+          <UCard>
+            <p class="text-xs text-muted">附件（blobs/）</p>
+            <p class="mt-1 text-xl font-semibold">{{ bytes(storage.files.bytes) }}</p>
+            <p class="text-xs text-muted">{{ storage.files.count }} 个文件，跟着最后一封引用它的信一起清理</p>
           </UCard>
           <UCard>
             <p class="text-xs text-muted">磁盘剩余</p>

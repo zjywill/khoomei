@@ -17,6 +17,8 @@ import (
 const (
 	Version = 1
 	MaxBody = 256 * 1024
+	// MaxFiles caps the attachments of one envelope (docs/FILES.md).
+	MaxFiles = 16
 )
 
 // Wake levels, lowest to highest.
@@ -27,8 +29,9 @@ const (
 )
 
 var (
-	idRe = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
-	tsRe = regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
+	shaRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	idRe  = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
+	tsRe  = regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
 )
 
 // Envelope is one message. Unknown fields are rejected on decode.
@@ -43,6 +46,16 @@ type Envelope struct {
 	ReplyTo   string          `json:"reply_to,omitempty"`
 	Wake      string          `json:"wake,omitempty"`
 	Data      json.RawMessage `json:"data,omitempty"`
+	Files     []FileRef       `json:"files,omitempty"`
+}
+
+// FileRef points at a blob already on the hub (docs/FILES.md). Name is a label for people; a
+// receiver chooses its own path when saving.
+type FileRef struct {
+	SHA256 string `json:"sha256"`
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	Type   string `json:"type,omitempty"`
 }
 
 // Received is what the hub records next to a stored envelope.
@@ -97,10 +110,41 @@ func (e *Envelope) Validate() error {
 		return errors.New("bad kind")
 	case e.ReplyTo != "" && !idRe.MatchString(e.ReplyTo):
 		return errors.New("bad reply_to")
-	case strings.TrimSpace(e.Text) == "" && (len(e.Data) == 0 || string(e.Data) == "null"):
-		return errors.New("empty message: text or data is required")
+	case len(e.Files) > MaxFiles:
+		return fmt.Errorf("at most %d files", MaxFiles)
+	case strings.TrimSpace(e.Text) == "" && (len(e.Data) == 0 || string(e.Data) == "null") && len(e.Files) == 0:
+		return errors.New("empty message: text, data or files is required")
+	}
+	for _, f := range e.Files {
+		switch {
+		case !ValidSHA256(f.SHA256):
+			return errors.New("bad file sha256")
+		case !ValidFileName(f.Name):
+			return errors.New("bad file name")
+		case f.Size < 0:
+			return errors.New("bad file size")
+		case len(f.Type) > 127:
+			return errors.New("bad file type")
+		}
 	}
 	return nil
+}
+
+// ValidSHA256 reports whether s is a lowercase hex SHA-256, the name of a blob.
+func ValidSHA256(s string) bool { return shaRe.MatchString(s) }
+
+// ValidFileName: 1–255 characters, no path separators or control characters.
+func ValidFileName(name string) bool {
+	n := len([]rune(name))
+	if n < 1 || n > 255 || name == "." || name == ".." {
+		return false
+	}
+	for _, r := range name {
+		if r == '/' || r == '\\' || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // EffectiveKind returns Kind or the default "text".

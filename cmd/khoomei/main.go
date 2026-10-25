@@ -48,6 +48,7 @@ Commands:
   inbox    list pending messages
   wait     long-poll until a message arrives (exit 4 on timeout)
   ack      acknowledge handled messages
+  fetch    download the files attached to a pending message
   watch    long-poll in a loop and run a local command when messages arrive (caller-side wake)
   mcp      serve the four tools over stdio for MCP hosts such as Claude Code and Codex
   doctor   read-only status report
@@ -93,7 +94,7 @@ func run(args []string) error {
 	cmds := map[string]func(context.Context, *config.Config, []string) error{
 		"setup": cmdSetup, "agent": cmdAgent, "serve": cmdServe, "send": cmdSend,
 		"inbox": cmdInbox, "wait": cmdWait, "ack": cmdAck, "doctor": cmdDoctor,
-		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner, "prune": cmdPrune,
+		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner, "prune": cmdPrune, "fetch": cmdFetch,
 		"version": func(context.Context, *config.Config, []string) error { fmt.Println("khoomei", hub.Version); return nil },
 	}
 	fn, ok := cmds[rest[0]]
@@ -397,7 +398,7 @@ func cmdServe(ctx context.Context, cfg *config.Config, args []string) error {
 	}
 	box := mailbox.New(cfg.Home)
 	h := hub.New(cfg, box, whois{node}, logf)
-	pan, err := panel.New(cfg, box, logf)
+	pan, err := panel.New(cfg, box, h.Blobs, logf)
 	if err != nil {
 		return fmt.Errorf("panel index: %w", err)
 	}
@@ -528,12 +529,17 @@ func cmdSend(ctx context.Context, cfg *config.Config, args []string) error {
 	replyTo := fs.String("reply-to", "", "id of the message this answers")
 	wake := fs.String("wake", protocol.WakeBatch, "requested wake level: now | batch | none")
 	as := fs.String("as", "", "send as this agent")
+	var files []string
+	fs.Func("file", "attach a local file (repeatable)", func(p string) error { files = append(files, p); return nil })
 	fs.Parse(args)
-	if *to == "" {
-		return errors.New("--to is required")
+	if *to == "" || !protocol.ValidAddress(*to) {
+		return errors.New("--to is required and must be NAME or OWNER/NAME")
 	}
-	if strings.TrimSpace(*text) == "" && *data == "" {
-		return errors.New("--text or --data is required; the hub refuses empty messages")
+	if strings.TrimSpace(*text) == "" && *data == "" && len(files) == 0 {
+		return errors.New("--text, --data or --file is required; the hub refuses empty messages")
+	}
+	if len(files) > protocol.MaxFiles {
+		return fmt.Errorf("at most %d files per message", protocol.MaxFiles)
 	}
 	from, err := agentName(cfg, *as)
 	if err != nil {
@@ -547,14 +553,27 @@ func cmdSend(ctx context.Context, cfg *config.Config, args []string) error {
 		}
 		env.Data = json.RawMessage(*data)
 	}
-	if err := env.Validate(); err != nil {
-		return err
-	}
 	c, done, err := hubClient(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer done()
+	if len(files) > 0 {
+		// Upload everything first; a message is only sent once all its files are on the hub.
+		if err := c.RequireBlobs(ctx); err != nil {
+			return err
+		}
+		for _, p := range files {
+			ref, err := c.UploadFile(ctx, from, p)
+			if err != nil {
+				return err
+			}
+			env.Files = append(env.Files, ref)
+		}
+	}
+	if err := env.Validate(); err != nil {
+		return err
+	}
 	resp, err := c.Send(ctx, env)
 	if err != nil {
 		return err
@@ -586,6 +605,9 @@ func printMessages(items []protocol.Record, asJSON bool) {
 		}
 		if len(e.Data) > 0 {
 			fmt.Println("    data: " + string(e.Data))
+		}
+		for _, f := range e.Files {
+			fmt.Printf("    file: %s (%d bytes, sha256 %s…)  →  khoomei fetch %s\n", f.Name, f.Size, f.SHA256[:12], e.ID)
 		}
 	}
 }
@@ -671,6 +693,64 @@ func cmdAck(ctx context.Context, cfg *config.Config, args []string) error {
 	return nil
 }
 
+func cmdFetch(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("fetch", flag.ExitOnError)
+	as := fs.String("as", "", "agent whose message it is")
+	out := fs.String("out", "", "directory to save into (default $KHOOMEI_HOME/files/<id>); with --sha256, the file to write")
+	sha := fs.String("sha256", "", "fetch one file by hash instead of a pending message's attachments")
+	fs.Parse(nameFirst(args))
+	agent, err := agentName(cfg, *as)
+	if err != nil {
+		return err
+	}
+	c, done, err := hubClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer done()
+	if *sha != "" {
+		if *out == "" || !protocol.ValidSHA256(*sha) {
+			return errors.New("usage: khoomei fetch --sha256 HASH --out FILE")
+		}
+		paths, err := c.FetchFiles(ctx, agent, []protocol.FileRef{{SHA256: *sha, Name: filepath.Base(*out), Size: -1}}, filepath.Dir(*out))
+		if err != nil {
+			return err
+		}
+		printJSON(map[string]any{"ok": true, "files": paths})
+		return nil
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: khoomei fetch MESSAGE_ID [--out DIR]")
+	}
+	id := fs.Arg(0)
+	resp, err := c.Inbox(ctx, agent)
+	if err != nil {
+		return err
+	}
+	if resp.Status != 200 {
+		return errors.New(resp.Error)
+	}
+	for _, rec := range resp.Messages {
+		if rec.Envelope.ID != id {
+			continue
+		}
+		if len(rec.Envelope.Files) == 0 {
+			return fmt.Errorf("message %s has no files", id)
+		}
+		dir := *out
+		if dir == "" {
+			dir = filepath.Join(cfg.Home, "files", client.SafeName(id))
+		}
+		paths, err := c.FetchFiles(ctx, agent, rec.Envelope.Files, dir)
+		if err != nil {
+			return err
+		}
+		printJSON(map[string]any{"ok": true, "files": paths})
+		return nil
+	}
+	return fmt.Errorf("message %s is not in %s's inbox; fetch before you ack, or use --sha256", id, agent)
+}
+
 func cmdWatch(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	as := fs.String("as", "", "agent whose inbox to watch")
@@ -708,7 +788,7 @@ func cmdMCP(ctx context.Context, cfg *config.Config, args []string) error {
 		return err
 	}
 	defer done()
-	s := &mcp.Server{Client: c, Agent: agent, Version: hub.Version}
+	s := &mcp.Server{Client: c, Agent: agent, Version: hub.Version, FilesDir: filepath.Join(cfg.Home, "files")}
 	return s.Serve(ctx, os.Stdin, os.Stdout)
 }
 

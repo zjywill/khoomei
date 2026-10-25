@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/zjywill/khoomei/internal/blobs"
+	"github.com/zjywill/khoomei/internal/disk"
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
@@ -126,11 +129,31 @@ func (p *Panel) remove(picked []entry, dryRun bool, why string) (PruneResult, er
 			byRoom[e.Room] = append(byRoom[e.Room], e.ID)
 		}
 	}
+	var maybe []string // attachments of the removed messages
+	for k := range gone {
+		if e := p.byKey[k]; e != nil {
+			maybe = append(maybe, e.Files...)
+		}
+	}
 	p.drop(gone)
+	var orphaned []string
+	for _, sha := range maybe {
+		if p.refs[sha] == 0 && !slices.Contains(orphaned, sha) {
+			orphaned = append(orphaned, sha)
+		}
+	}
 	for _, room := range sortedKeys(byRoom) {
 		p.push(Event{Type: "pruned", Room: room, IDs: byRoom[room]})
 	}
 	p.mu.Unlock()
+	// A file goes with the last message that attached it.
+	for _, sha := range orphaned {
+		freed, err := p.blobs.Remove(sha)
+		res.Bytes += freed
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if res.Count > 0 || firstErr != nil {
 		p.logf("prune (%s): removed %d records, %d bytes; err=%v", why, res.Count, res.Bytes, firstErr)
 	}
@@ -180,10 +203,51 @@ func (p *Panel) Retain() (PruneResult, error) {
 			}
 		}
 	}
+	n, freed, err := p.pruneOrphans()
+	total.Bytes += freed
+	if err != nil {
+		return total, err
+	}
+	if n > 0 {
+		p.logf("prune (orphaned files): removed %d files, %d bytes", n, freed)
+	}
 	p.mu.Lock()
 	p.lastRun, p.lastGone = p.now(), total.Count
 	p.mu.Unlock()
 	return total, nil
+}
+
+// pruneOrphans removes files no indexed message attaches, once they are a day old: uploads whose
+// message never got sent, and leftovers of an interrupted prune.
+func (p *Panel) pruneOrphans() (n int, freed int64, err error) {
+	if p.blobs == nil {
+		return 0, 0, nil
+	}
+	cutoff := p.now().Add(-MinPruneAge)
+	var stale []string
+	err = p.blobs.Each(func(sha string, m blobs.Meta) {
+		p.mu.Lock()
+		used := p.refs[sha] > 0
+		p.mu.Unlock()
+		if !used && m.Seen().Before(cutoff) {
+			stale = append(stale, sha)
+		}
+	})
+	for _, sha := range stale {
+		p.mu.Lock()
+		used := p.refs[sha] > 0 // attached again since the scan
+		p.mu.Unlock()
+		if used {
+			continue
+		}
+		f, rerr := p.blobs.Remove(sha)
+		if rerr != nil && err == nil {
+			err = rerr
+		}
+		n++
+		freed += f
+	}
+	return n, freed, err
 }
 
 // Run applies retention a minute after start and then every hour until ctx ends.
@@ -215,10 +279,21 @@ type roomUsage struct {
 	ID      string `json:"id"`
 	Pending usage  `json:"pending"`
 	Acked   usage  `json:"acked"`
+	Files   usage  `json:"files"` // distinct attachments of this room's messages; a file in two rooms counts in both
 }
 
 func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
+	sizes := map[string]int64{}
+	var files usage
+	if p.blobs != nil {
+		_ = p.blobs.Each(func(sha string, m blobs.Meta) {
+			sizes[sha] = m.Size
+			files.Count++
+			files.Bytes += m.Size
+		})
+	}
 	p.mu.Lock()
+	seen := map[string]map[string]bool{} // room → attachments counted
 	byRoom := map[string]*roomUsage{RoomSelf: {ID: RoomSelf}}
 	oldest := map[string]int64{}
 	for _, e := range p.byKey {
@@ -237,6 +312,16 @@ func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
 			oldest[k] = e.Seq
 			u.Oldest = e.received().UTC().Format(time.RFC3339)
 		}
+		for _, sha := range e.Files {
+			if seen[e.Room] == nil {
+				seen[e.Room] = map[string]bool{}
+			}
+			if size, ok := sizes[sha]; ok && !seen[e.Room][sha] {
+				seen[e.Room][sha] = true
+				ru.Files.Count++
+				ru.Files.Bytes += size
+			}
+		}
 	}
 	rooms := []roomUsage{*byRoom[RoomSelf]} // self first, then friends by name, then the hidden rest
 	for _, id := range sortedKeys(byRoom) {
@@ -252,9 +337,9 @@ func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
 		ret["last_run"] = p.lastRun.UTC().Format(time.RFC3339)
 	}
 	p.mu.Unlock()
-	free, total := diskSpace(p.cfg.Home)
+	free, total := disk.Space(p.cfg.Home)
 	writeJSON(w, 200, map[string]any{"ok": true, "disk": map[string]any{"free_bytes": free, "total_bytes": total},
-		"retention": ret, "rooms": rooms})
+		"retention": ret, "rooms": rooms, "files": files})
 }
 
 // handlePrune is the panel's only write. Besides the hub's Host check it insists on a JSON

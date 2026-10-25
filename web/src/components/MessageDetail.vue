@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Rec } from '../api'
-import { fullTime } from '../format'
+import { blobURL, type Rec } from '../api'
+import { bytes, fullTime } from '../format'
 
 const props = defineProps<{ rec: Rec }>()
 
@@ -40,6 +40,20 @@ const raw = computed(() => JSON.stringify({ envelope: props.rec.envelope, receiv
     <section v-if="rec.envelope.text">
       <h3 class="mb-1.5 text-xs font-medium text-muted">正文</h3>
       <p class="whitespace-pre-wrap break-words rounded-md bg-elevated/50 p-3">{{ rec.envelope.text }}</p>
+    </section>
+
+    <section v-if="rec.envelope.files?.length">
+      <h3 class="mb-1.5 text-xs font-medium text-muted">附件</h3>
+      <ul class="flex flex-col gap-2">
+        <li v-for="f in rec.envelope.files" :key="f.sha256" class="rounded-md bg-elevated/50 p-3">
+          <div class="flex items-center justify-between gap-2">
+            <span class="truncate">{{ f.name }}</span>
+            <UButton :to="blobURL(f)" :download="f.name" icon="i-lucide-download" :label="bytes(f.size)" size="xs" color="neutral" variant="outline" />
+          </div>
+          <p class="mt-1 break-all font-mono text-xs text-muted">sha256 {{ f.sha256 }}</p>
+          <p v-if="f.type" class="font-mono text-xs text-muted">{{ f.type }}</p>
+        </li>
+      </ul>
     </section>
 
     <section v-if="data">

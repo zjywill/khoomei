@@ -11,7 +11,25 @@ export interface Envelope {
   reply_to?: string
   wake?: string
   data?: unknown
+  files?: FileRef[]
 }
+
+export interface FileRef {
+  sha256: string
+  name: string
+  size: number
+  type?: string
+}
+
+/** Download link for an attachment; inline previews only what the hub sniffs as a safe image. */
+export function blobURL(f: FileRef, inline = false): string {
+  const q = new URLSearchParams({ name: f.name })
+  if (inline) q.set('inline', '1')
+  return `/admin/api/blob/${f.sha256}?${q}`
+}
+
+const previewable = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+export const canPreview = (f: FileRef) => previewable.has((f.type ?? '').toLowerCase()) || /\.(png|jpe?g|gif|webp)$/i.test(f.name)
 
 export interface Received {
   at: string
@@ -70,7 +88,8 @@ export interface Usage {
 export interface Storage {
   disk: { free_bytes: number; total_bytes: number }
   retention: { acked_days: number; max_mb: number; last_run?: string; last_pruned: number }
-  rooms: { id: string; pending: Usage; acked: Usage }[]
+  rooms: { id: string; pending: Usage; acked: Usage; files: Usage }[]
+  files: Usage
 }
 
 export interface PruneRequest {

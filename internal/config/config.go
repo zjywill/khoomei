@@ -61,6 +61,31 @@ func (r Retention) AckedDaysOrDefault() int {
 	return max(*r.AckedDays, 0)
 }
 
+// Blob limits the files agents attach to messages (docs/FILES.md).
+type Blob struct {
+	MaxMB     int `json:"max_mb,omitempty"`      // largest single file; 0: DefaultBlobMaxMB
+	MinFreeMB int `json:"min_free_mb,omitempty"` // refuse uploads below this much free disk; 0: DefaultBlobMinFreeMB
+}
+
+const (
+	DefaultBlobMaxMB     = 25
+	DefaultBlobMinFreeMB = 500
+)
+
+func (b Blob) MaxBytes() int64 {
+	if b.MaxMB <= 0 {
+		return DefaultBlobMaxMB << 20
+	}
+	return int64(b.MaxMB) << 20
+}
+
+func (b Blob) MinFreeBytes() uint64 {
+	if b.MinFreeMB <= 0 {
+		return DefaultBlobMinFreeMB << 20
+	}
+	return uint64(b.MinFreeMB) << 20
+}
+
 type TSNet struct {
 	Dir         string `json:"dir,omitempty"`      // state directory; default <home>/tsnet
 	Hostname    string `json:"hostname,omitempty"` // node name on the tailnet; default khoomei-<owner>[-<agent>]
@@ -84,6 +109,7 @@ type Config struct {
 	Owners    map[string]*OwnerSpec `json:"owners,omitempty"` // hub: other people whose agents may connect
 	Agents    map[string]*AgentSpec `json:"agents"`           // hub: keyed by full address once Owner is set
 	Retention Retention             `json:"retention"`        // hub: automatic pruning of acked records
+	Blob      Blob                  `json:"blob"`             // hub: attachment limits
 
 	Home string `json:"-"`
 	Path string `json:"-"`

@@ -1,8 +1,12 @@
 package panel
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/color"
+	pngenc "image/png"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -40,7 +44,7 @@ func TestDevServer(t *testing.T) {
 	}
 	box := mailbox.New(cfg.Home)
 	h := hub.New(cfg, box, nil, t.Logf)
-	p, err := New(cfg, box, t.Logf)
+	p, err := New(cfg, box, h.Blobs, t.Logf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +94,33 @@ func TestDevServer(t *testing.T) {
 	ack("junyi/grok", x)
 	send("alice/muse", "alice/codex", "text", "这条是 alice 自己的，不该出现在面板里", "", "")
 	send("junyi/claude", "junyi/grok", "text", "被清理过的回复引用", "Zz0000000000pruned", "")
+
+	// Attachments: a chart Grok drew and the report it belongs to.
+	var png bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 320, 180))
+	for x := range 320 {
+		for y := range 180 {
+			img.Set(x, y, color.RGBA{uint8(200 - y/2), uint8(140 + x/8), uint8(60 + x/4), 255})
+		}
+	}
+	_ = pngenc.Encode(&png, img)
+	report := []byte(strings.Repeat("khoomei 0.5 release notes\n", 400))
+	var refs []protocol.FileRef
+	for _, f := range []struct {
+		name, typ string
+		body      []byte
+	}{{"chart.png", "image/png", png.Bytes()}, {"release-notes.txt", "text/plain", report}} {
+		sha, _, err := h.Blobs.Put(bytes.NewReader(f.body), int64(len(f.body)), 1<<24, "", f.typ, "junyi/grok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, protocol.FileRef{SHA256: sha, Name: f.name, Size: int64(len(f.body)), Type: f.typ})
+	}
+	withFiles := protocol.New("junyi/grok", "junyi/claude", "图和完整的发布说明在附件里")
+	withFiles.Kind, withFiles.Files = "reply", refs
+	if _, err := h.Receive(hub.Identity{Node: cfg.Agents["junyi/grok"].Node}, withFiles); err != nil {
+		t.Fatal(err)
+	}
 
 	// Muse long-polls the whole time, so it shows online.
 	go func() {

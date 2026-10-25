@@ -38,6 +38,9 @@ type Response struct {
 	Acked     []string          `json:"acked,omitempty"`
 	Version   string            `json:"version,omitempty"`
 	DryRun    bool              `json:"dry_run,omitempty"`
+	Features  []string          `json:"features,omitempty"`
+	SHA256    string            `json:"sha256,omitempty"`
+	Size      int64             `json:"size,omitempty"`
 	Count     int               `json:"count,omitempty"`
 	Bytes     int64             `json:"bytes,omitempty"`
 }
@@ -145,4 +148,112 @@ func (c *Client) Ack(ctx context.Context, agent string, ids []string) (*Response
 // Prune asks the hub's panel to remove records (docs/PANEL.md#清理); only the hub owner may.
 func (c *Client) Prune(ctx context.Context, req any) (*Response, error) {
 	return c.callWith(ctx, http.MethodPost, "/admin/api/prune", req, 60*time.Second, map[string]string{"X-Khoomei-Panel": "1"})
+}
+
+// HasFeature reports whether a /health response lists feature f; hubs before 0.5 list none.
+func (r *Response) HasFeature(f string) bool {
+	for _, x := range r.Features {
+		if x == f {
+			return true
+		}
+	}
+	return false
+}
+
+// blobTimeout gives a transfer of size bytes at least a minute plus a second per 64 KB, enough for a
+// slow DERP relay.
+func blobTimeout(size int64) time.Duration {
+	return time.Minute + time.Duration(size/(64<<10))*time.Second
+}
+
+// PutBlob uploads size bytes from r as agent (docs/FILES.md). sha, when known, lets the hub verify
+// the content; typ is a hint. Not retried: the caller decides, since r may not be rewindable.
+func (c *Client) PutBlob(ctx context.Context, agent string, r io.Reader, size int64, sha, typ string) (*Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, blobTimeout(size))
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.Base+"/blob?agent="+url.QueryEscape(agent), r)
+	if err != nil {
+		return nil, err
+	}
+	req.ContentLength = size
+	if typ == "" {
+		typ = "application/octet-stream"
+	}
+	req.Header.Set("Content-Type", typ)
+	if sha != "" {
+		req.Header.Set("X-Khoomei-SHA256", sha)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cannot reach %s: %w", c.Base, err)
+	}
+	defer resp.Body.Close()
+	out := &Response{Status: resp.StatusCode}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return nil, fmt.Errorf("/blob: bad response (%d)", resp.StatusCode)
+	}
+	return out, nil
+}
+
+// HasBlob asks whether agent may already fetch sha from the hub, which also means it may attach it.
+func (c *Client) HasBlob(ctx context.Context, agent, sha string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.blobURL(agent, sha, ""), nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("cannot reach %s: %w", c.Base, err)
+	}
+	resp.Body.Close()
+	switch resp.StatusCode {
+	case 200:
+		return true, nil
+	case 404:
+		return false, nil
+	}
+	return false, fmt.Errorf("/blob: HTTP %d", resp.StatusCode)
+}
+
+// GetBlob downloads sha into w, which receives exactly size bytes or the call fails; a negative size
+// takes whatever the hub sends.
+func (c *Client) GetBlob(ctx context.Context, agent, sha, name string, size int64, w io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, blobTimeout(max(size, 25<<20)))
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.blobURL(agent, sha, name), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("cannot reach %s: %w", c.Base, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		var e Response
+		_ = json.NewDecoder(resp.Body).Decode(&e)
+		return fmt.Errorf("/blob/%s: HTTP %d %s", sha[:12], resp.StatusCode, e.Error)
+	}
+	var body io.Reader = resp.Body
+	if size >= 0 {
+		body = io.LimitReader(resp.Body, size+1)
+	}
+	n, err := io.Copy(w, body)
+	if err != nil {
+		return err
+	}
+	if size >= 0 && n != size {
+		return fmt.Errorf("/blob/%s: got %d bytes, expected %d", sha[:12], n, size)
+	}
+	return nil
+}
+
+func (c *Client) blobURL(agent, sha, name string) string {
+	u := c.Base + "/blob/" + sha + "?agent=" + url.QueryEscape(agent)
+	if name != "" {
+		u += "&name=" + url.QueryEscape(name)
+	}
+	return u
 }

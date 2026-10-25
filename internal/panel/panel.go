@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zjywill/khoomei/internal/blobs"
 	"github.com/zjywill/khoomei/internal/config"
 	"github.com/zjywill/khoomei/internal/mailbox"
 	"github.com/zjywill/khoomei/internal/protocol"
@@ -21,13 +22,15 @@ const (
 )
 
 type Panel struct {
-	cfg  *config.Config
-	box  *mailbox.Mailbox
-	logf func(string, ...any)
+	cfg   *config.Config
+	box   *mailbox.Mailbox
+	blobs *blobs.Store
+	logf  func(string, ...any)
 
 	mu       sync.Mutex
 	byKey    map[string]*entry
 	rooms    map[string][]*entry
+	refs     map[string]int // sha256 → number of indexed messages attaching it
 	presence map[string]*presence
 	events   []Event // ring of the latest eventRing events, ordered by Seq
 	nextSeq  int64
@@ -69,11 +72,11 @@ type Record struct {
 }
 
 // New builds the panel and indexes everything already on disk.
-func New(cfg *config.Config, box *mailbox.Mailbox, logf func(string, ...any)) (*Panel, error) {
+func New(cfg *config.Config, box *mailbox.Mailbox, bl *blobs.Store, logf func(string, ...any)) (*Panel, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	p := &Panel{cfg: cfg, box: box, logf: logf, byKey: map[string]*entry{}, rooms: map[string][]*entry{},
+	p := &Panel{cfg: cfg, box: box, blobs: bl, logf: logf, byKey: map[string]*entry{}, rooms: map[string][]*entry{}, refs: map[string]int{},
 		presence: map[string]*presence{}, nextSeq: 1, notify: make(chan struct{}), now: time.Now}
 	err := box.Scan(func(rec protocol.Record, acked bool, size int64) {
 		e := newEntry(rec, p.roomOf(rec.Envelope.FromAgent, rec.Envelope.ToAgent), acked, size)

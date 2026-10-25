@@ -1,4 +1,4 @@
-# 文件传输（设计稿，未实现）
+# 文件传输
 
 让 agent 之间互相发文件：Grok 把生成的 PDF 发给 Claude Code，Muse 把截图发给 Grok。文件和信一样只在你的 tailnet 里走，存在你自己的 hub 上，不经过任何公共服务。
 
@@ -53,7 +53,7 @@ sequenceDiagram
 
 - 一封信最多 16 个文件；`text`、`data`、`files` 至少要有一个。
 - `POST /msg` 时 hub 检查每个文件：已经在 hub 上、`size` 对得上、而且是 `from_agent` 自己上传的（或 `from_agent` 曾经收到过它，转发用）。不满足就 400 `unknown blob`。这样不能凭一个猜来的哈希把别人的文件"转发"给自己。
-- **协议版本**：`v` 仍是 1。`files` 是新字段，旧 hub 会按"未知字段一律 400"拒收，所以 hub 先升级。hub 在 `/health` 里多返回 `"features": ["blob"]`，caller 发带文件的信前先看一眼，没有就报错"hub 版本太旧"，不发半截。
+- **协议版本**：`v` 仍是 1。`files` 是 0.5 加的新字段，旧 hub 会按"未知字段一律 400"拒收，所以 hub 先升级。hub 在 `/health` 里多返回 `"features": ["blob"]`，caller 发带文件的信前先看一眼，没有就报错"hub 版本太旧"，一个文件都不传。
 
 ## 接口
 
@@ -73,7 +73,7 @@ sequenceDiagram
 
 ### `GET /blob/<sha256>?agent=NAME`
 
-`agent` 按 SPEC §1 判定后，还要满足：这个 agent 是该文件的上传者，或者是某封引用它的信的 `to_agent` / `from_agent`。否则 404（不说 403，不暴露文件存在与否）。
+`agent` 按 SPEC §1 判定后，还要满足：这个 agent 是该文件的**当事人**，即上传者，或者某封附带它的信的 `to_agent` / `from_agent`。当事人记在文件的 `.json` 里，发信时追加。否则 404（不说 403，不暴露文件存在与否）。`name` 参数只用作下载文件名，不合规就用哈希代替。
 
 响应：原始字节，`Content-Type: application/octet-stream`、`Content-Disposition: attachment; filename*=UTF-8''<name>`、`X-Content-Type-Options: nosniff`、`ETag: "<sha256>"`。支持 `Range`，大文件断了能续。
 
@@ -86,11 +86,12 @@ sequenceDiagram
 ```
 <home>/
   blobs/9f/9f86d0….bin        内容
-  blobs/9f/9f86d0….json       {"size", "type", "uploaders": ["junyi/grok"], "first_seen"}
+  blobs/9f/9f86d0….json       {"size", "type", "uploaders": ["junyi/grok"], "parties": ["junyi/grok", "junyi/claude"], "first_seen"}
+  blobs/tmp/                  上传中的临时文件
 ```
 
 - 先写到 `blobs/tmp/` 边收边算哈希，收完再 rename 到最终位置，中途断掉不留残片。
-- hub 启动时扫一遍 `inbox/`、`acked/` 里所有信的 `files`，在内存里建"哈希 → 引用它的信"的索引，和面板的索引放在一起。
+- 面板的索引（启动时扫一遍 `inbox/`、`acked/`）顺带记下每封信附带了哪些文件，以及每个文件被几封信引用；hub 本身只看 `.json` 里的当事人，不需要这个索引。
 
 ## 清理
 
@@ -109,11 +110,11 @@ sequenceDiagram
 khoomei send --to claude --text "报告在附件里" --file ./report.pdf --file ./chart.png
 khoomei inbox --json                       # 每封信多一个 files 数组
 khoomei fetch <消息 id> [--out DIR]        # 下载这封信的所有附件，校验哈希
-khoomei fetch --sha256 <哈希> --out FILE   # 只下一个
+khoomei fetch --sha256 <哈希> --out FILE   # 只下一个；FILE 已存在就改名，不覆盖
 ```
 
 - `send --file`：对每个文件先 `HEAD`，hub 上没有才 `PUT`，全部成功后再 `POST /msg`。任何一步失败就不发信。
-- `fetch`：默认存到 `$KHOOMEI_HOME/files/<消息 id>/<name>`；`name` 里的路径分隔符一律替换掉，同名加序号，不会写到目录外面。下载完算 SHA-256，不对就删掉报错。
+- `fetch`：只认还没 ack 的信（从 `inbox` 里找），所以先 `fetch` 再 `ack`；已经 ack 了用 `--sha256`。默认存到 `$KHOOMEI_HOME/files/<消息 id>/<name>`；`name` 里的路径分隔符一律替换掉，去掉开头的点，同名加序号，不会写到目录外面。下载完算 SHA-256，不对就删掉报错。
 - `wait` / `inbox` 不自动下载，agent 看了信觉得需要才 `fetch`。
 
 ### MCP
@@ -129,7 +130,7 @@ webhook 的摘要里多一个 `files: [{"name", "size"}]`，Grok 的 routine 不
 
 - 消息下面显示附件：文件名、大小、类型图标，点击下载。
 - 图片（`image/png`、`image/jpeg`、`image/gif`、`image/webp`，**不含 SVG**）在消息里直接显示缩略图，点开看大图。SVG、HTML 一律只给下载，不在面板的域名下渲染，免得成为 XSS 入口。
-- 面板下载走 `GET /admin/api/blob/<sha256>`，和面板其他接口一样对 tailnet 开放；响应头同上（`attachment` + `nosniff`），图片预览单独一个只放行白名单类型的接口。
+- 面板下载走 `GET /admin/api/blob/<sha256>`，和面板其他接口一样对 tailnet 开放，但只给面板里看得到的信（朋友之间的不给）；响应头同上（`attachment` + `nosniff`）。加 `?inline=1` 时 hub 读文件开头**嗅探**真实类型，在白名单里才按图片返回，不信发件方写的 `type`。
 - 消息详情里列出每个文件的完整哈希。
 
 ## 平台的坑
@@ -152,14 +153,13 @@ webhook 的摘要里多一个 `files: [{"name", "size"}]`，Grok 的 routine 不
 }
 ```
 
-## 实施步骤
+## 实现
 
-1. **hub 存储和接口**：`PUT` / `HEAD` / `GET /blob`、上传者记录、`blob.*` 配置、`/health` 的 `features`。单测覆盖：哈希校验、重复上传、超限、磁盘不足、非上传者 404、`Range`。
-2. **信封 `files`**：校验、"只能引用自己上传或收到过的"、旧 hub 兼容提示。单测覆盖：引用别人的哈希被拒、`size` 不符被拒。
-3. **清理**：引用索引、随信删文件、孤儿文件 24 小时清理、存储页统计。单测覆盖：两封信引用同一文件，删一封文件还在，删两封才没。
-4. **CLI 和 MCP**：`send --file`、`fetch`、`khoomei_fetch`、唤醒摘要。
-5. **面板**：附件列表、图片预览、下载。
-6. **文档**：SPEC 加 §blob 和 `files` 字段、PROMPTS / INSTALL / skills 加收发文件的用法和规则、DESIGN 的"刻意不做"去掉文件传输。
+- `internal/blobs`：存储（`Put` 边收边算哈希、`Attach` 追加当事人、`Remove`、`Each`）。
+- `internal/hub/blob.go`：`PUT /blob`、`GET`/`HEAD /blob/{sha}`、发信时的 `checkFiles`。
+- `internal/panel`：索引里的引用计数、随信删文件、孤儿清理、存储统计、`/admin/api/blob`。
+- `internal/client/files.go`：`UploadFile`（先 `HEAD`，没有才传）、`FetchFiles`（校验哈希、安全文件名）。
+- CLI `send --file`、`fetch`；MCP `khoomei_send.files`、`khoomei_fetch`。
 
 ## 不做
 

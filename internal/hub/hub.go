@@ -12,12 +12,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zjywill/khoomei/internal/blobs"
 	"github.com/zjywill/khoomei/internal/config"
 	"github.com/zjywill/khoomei/internal/mailbox"
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
-const Version = "0.4.1"
+const Version = "0.5.0"
 
 var (
 	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
@@ -58,6 +59,7 @@ func (e BadRequestError) Error() string { return string(e) }
 type Hub struct {
 	Cfg      *config.Config
 	Box      *mailbox.Mailbox
+	Blobs    *blobs.Store
 	Resolver Resolver
 	Waker    *Waker
 	Logf     func(string, ...any)
@@ -76,7 +78,7 @@ func New(cfg *config.Config, box *mailbox.Mailbox, res Resolver, logf func(strin
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	h := &Hub{Cfg: cfg, Box: box, Resolver: res, Waker: NewWaker(cfg, logf), Logf: logf}
+	h := &Hub{Cfg: cfg, Box: box, Blobs: blobs.New(cfg.Home), Resolver: res, Waker: NewWaker(cfg, logf), Logf: logf}
 	h.Identify = h.identifyRemote
 	h.Waker.OnWake = func(env *protocol.Envelope, result, detail string) {
 		if h.Observer != nil {
@@ -180,6 +182,9 @@ func (h *Hub) Receive(id Identity, env *protocol.Envelope) (fresh bool, err erro
 	if _, ok := h.Cfg.Agents[env.ToAgent]; !ok {
 		return false, BadRequestError("unknown to_agent " + env.ToAgent)
 	}
+	if err := h.checkFiles(env); err != nil {
+		return false, err
+	}
 	peer := id.Node
 	if id.Local {
 		peer = "hub"
@@ -189,6 +194,11 @@ func (h *Hub) Receive(id Identity, env *protocol.Envelope) (fresh bool, err erro
 		return false, err
 	}
 	if fresh {
+		if len(env.Files) > 0 {
+			if err := h.Blobs.Attach(env.Files, env.FromAgent, env.ToAgent); err != nil {
+				h.Logf("attach files of %s: %v", env.ID, err)
+			}
+		}
 		if h.Observer != nil {
 			h.Observer.Stored(rec)
 		}
@@ -216,12 +226,14 @@ func (h *Hub) seen(agent string, waiting int) {
 func (h *Hub) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "v": protocol.Version, "version": Version, "owner": h.Cfg.Owner})
+		writeJSON(w, 200, map[string]any{"ok": true, "v": protocol.Version, "version": Version, "owner": h.Cfg.Owner, "features": []string{"blob"}})
 	})
 	mux.HandleFunc("POST /msg", h.withIdentity(h.handleMsg))
 	mux.HandleFunc("GET /inbox", h.withIdentity(h.handleInbox))
 	mux.HandleFunc("GET /wait", h.withIdentity(h.handleInbox))
 	mux.HandleFunc("POST /ack", h.withIdentity(h.handleAck))
+	mux.HandleFunc("PUT /blob", h.withIdentity(h.handleBlobPut))
+	mux.HandleFunc("GET /blob/{sha}", h.withIdentity(h.handleBlobGet)) // GET patterns also answer HEAD
 	mux.HandleFunc("/admin", h.withAdmin(h.handleAdmin))
 	mux.HandleFunc("/admin/", h.withAdmin(h.handleAdmin))
 	mux.HandleFunc("GET /agents", h.withIdentity(func(w http.ResponseWriter, r *http.Request, id Identity) {

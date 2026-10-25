@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -30,7 +32,12 @@ func newHub(t *testing.T) *httptest.Server {
 
 func session(t *testing.T, srv *httptest.Server, lines ...string) []map[string]any {
 	t.Helper()
-	s := &Server{Client: client.New(srv.URL, nil), Agent: "claude", Version: "test"}
+	return sessionAs(t, srv, "claude", "", lines...)
+}
+
+func sessionAs(t *testing.T, srv *httptest.Server, agent, filesDir string, lines ...string) []map[string]any {
+	t.Helper()
+	s := &Server{Client: client.New(srv.URL, nil), Agent: agent, Version: "test", FilesDir: filesDir}
 	var out bytes.Buffer
 	if err := s.Serve(context.Background(), strings.NewReader(strings.Join(lines, "\n")+"\n"), &out); err != nil {
 		t.Fatal(err)
@@ -72,8 +79,8 @@ func TestHandshakeAndTools(t *testing.T) {
 		t.Errorf("should echo the client's protocol version: %v", init["protocolVersion"])
 	}
 	tools := replies[1]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 4 {
-		t.Errorf("want 4 tools, got %d", len(tools))
+	if len(tools) != 5 {
+		t.Errorf("want 5 tools, got %d", len(tools))
 	}
 	if replies[2]["error"] == nil {
 		t.Error("unknown method should be an error")
@@ -125,5 +132,35 @@ func TestSendInboxAck(t *testing.T) {
 	json.Unmarshal([]byte(toolText(t, replies[1])), &after)
 	if len(after.Messages) != 0 {
 		t.Fatalf("inbox after ack: %+v", after.Messages)
+	}
+}
+
+func TestSendAndFetchFiles(t *testing.T) {
+	srv := newHub(t)
+	src := filepath.Join(t.TempDir(), "notes.md")
+	os.WriteFile(src, []byte("# 会议纪要\n"), 0o600)
+	args, _ := json.Marshal(map[string]any{"to": "grok", "text": "附件", "files": []string{src}})
+	replies := session(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"khoomei_send","arguments":`+string(args)+`}}`)
+	var sent client.Response
+	json.Unmarshal([]byte(toolText(t, replies[0])), &sent)
+	if sent.Status != 202 {
+		t.Fatalf("send with file: %s", toolText(t, replies[0]))
+	}
+
+	dir := t.TempDir()
+	replies = sessionAs(t, srv, "grok", dir,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"khoomei_fetch","arguments":{"id":"`+sent.ID+`"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"khoomei_fetch","arguments":{"id":"nosuchmessage"}}}`,
+	)
+	var got struct{ Files []string }
+	json.Unmarshal([]byte(toolText(t, replies[0])), &got)
+	if len(got.Files) != 1 || filepath.Base(got.Files[0]) != "notes.md" || !strings.HasPrefix(got.Files[0], dir) {
+		t.Fatalf("fetch: %s", toolText(t, replies[0]))
+	}
+	if b, _ := os.ReadFile(got.Files[0]); string(b) != "# 会议纪要\n" {
+		t.Fatalf("content: %q", b)
+	}
+	if res := replies[1]["result"].(map[string]any); res["isError"] != true {
+		t.Errorf("fetch of an unknown message should be a tool error: %v", res)
 	}
 }

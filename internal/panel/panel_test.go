@@ -57,7 +57,7 @@ func (f *fixture) start() {
 		f.srv.Close()
 	}
 	f.h = hub.New(f.cfg, f.box, nil, f.t.Logf)
-	p, err := New(f.cfg, f.box, f.t.Logf)
+	p, err := New(f.cfg, f.box, f.h.Blobs, f.t.Logf)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -475,5 +475,107 @@ func TestStaticFallback(t *testing.T) {
 	}
 	if code := f.get("/admin/api/nope", nil); code != 404 {
 		t.Fatalf("unknown api: %d", code)
+	}
+}
+
+func (f *fixture) upload(agent string, body []byte) protocol.FileRef {
+	f.t.Helper()
+	sha, _, err := f.h.Blobs.Put(strings.NewReader(string(body)), int64(len(body)), 1<<20, "", "", agent)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return protocol.FileRef{SHA256: sha, Name: "f.bin", Size: int64(len(body))}
+}
+
+func (f *fixture) sendFiles(id hub.Identity, from, to string, files ...protocol.FileRef) *protocol.Envelope {
+	f.t.Helper()
+	env := protocol.New(from, to, "")
+	env.Files = files
+	if _, err := f.h.Receive(id, env); err != nil {
+		f.t.Fatalf("send files: %v", err)
+	}
+	return env
+}
+
+func TestFilesGoWithTheirLastMessage(t *testing.T) {
+	f := newFixture(t)
+	shared := f.upload("junyi/muse", []byte("shared"))
+	f.sendFiles(local, "junyi/muse", "junyi/grok", shared)
+	f.sendFiles(local, "junyi/muse", "junyi/grok", shared)
+	orphan := f.upload("junyi/muse", []byte("never sent"))
+	ackAll(t, f, "junyi/grok")
+
+	// Pruning one message keeps the file the other still attaches.
+	f.p.now = func() time.Time { return time.Now().Add(25 * time.Hour) }
+	f.p.mu.Lock()
+	var one []entry
+	for _, e := range f.p.byKey {
+		one = append(one, *e)
+		break
+	}
+	f.p.mu.Unlock()
+	if _, err := f.p.remove(one, false, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.h.Blobs.Stat(shared.SHA256); err != nil {
+		t.Fatal("file removed while another message still attaches it")
+	}
+	// Retention takes the second message and the file with it, and the day-old orphan too.
+	f.p.now = func() time.Time { return time.Now().Add(5 * 24 * time.Hour) }
+	if _, err := f.p.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	for _, sha := range []string{shared.SHA256, orphan.SHA256} {
+		if _, err := f.h.Blobs.Stat(sha); err == nil {
+			t.Fatalf("%s survived", sha[:8])
+		}
+	}
+}
+
+func TestYoungOrphanKept(t *testing.T) {
+	f := newFixture(t)
+	ref := f.upload("junyi/muse", []byte("just uploaded"))
+	if _, err := f.p.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.h.Blobs.Stat(ref.SHA256); err != nil {
+		t.Fatal("fresh upload pruned before its message was sent")
+	}
+}
+
+func TestPanelBlob(t *testing.T) {
+	f := newFixture(t)
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 64)...)
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)
+	img, script := f.upload("junyi/muse", png), f.upload("junyi/muse", svg)
+	f.sendFiles(local, "junyi/muse", "junyi/grok", img, script)
+	secret := f.upload("alice/muse", []byte("between alice's agents"))
+	f.sendFiles(alice, "alice/muse", "alice/codex", secret)
+
+	get := func(path string) *http.Response {
+		resp, err := http.Get(f.srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	if r := get("/admin/api/blob/" + img.SHA256 + "?inline=1"); r.StatusCode != 200 || r.Header.Get("Content-Type") != "image/png" || r.Header.Get("Content-Disposition") != "" {
+		t.Fatalf("png preview: %d %v", r.StatusCode, r.Header)
+	}
+	if r := get("/admin/api/blob/" + script.SHA256 + "?inline=1&name=x.svg"); r.Header.Get("Content-Type") != "application/octet-stream" || !strings.HasPrefix(r.Header.Get("Content-Disposition"), "attachment") {
+		t.Fatalf("svg served inline: %v", r.Header)
+	}
+	if r := get("/admin/api/blob/" + secret.SHA256); r.StatusCode != 404 {
+		t.Fatalf("friends' file visible: %d", r.StatusCode)
+	}
+
+	var st struct {
+		Rooms []roomUsage `json:"rooms"`
+		Files usage       `json:"files"`
+	}
+	f.get("/admin/api/storage", &st)
+	if st.Files.Count != 3 || st.Rooms[0].Files.Count != 2 {
+		t.Fatalf("storage: %+v %+v", st.Files, st.Rooms)
 	}
 }

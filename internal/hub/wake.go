@@ -101,11 +101,17 @@ func (w *Waker) report(env *protocol.Envelope, result, detail string) {
 }
 
 type summary struct {
-	ID        string `json:"id"`
-	FromAgent string `json:"from_agent"`
-	ToAgent   string `json:"to_agent"`
-	Kind      string `json:"kind"`
-	Preview   string `json:"preview"`
+	ID        string        `json:"id"`
+	FromAgent string        `json:"from_agent"`
+	ToAgent   string        `json:"to_agent"`
+	Kind      string        `json:"kind"`
+	Preview   string        `json:"preview"`
+	Files     []fileSummary `json:"files,omitempty"`
+}
+
+type fileSummary struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
 }
 
 func (w *Waker) fire(a *config.WakeAdapter, env *protocol.Envelope) error {
@@ -113,7 +119,11 @@ func (w *Waker) fire(a *config.WakeAdapter, env *protocol.Envelope) error {
 	if len(preview) > 200 {
 		preview = preview[:200]
 	}
-	body, _ := json.Marshal(summary{ID: env.ID, FromAgent: env.FromAgent, ToAgent: env.ToAgent, Kind: env.EffectiveKind(), Preview: string(preview)})
+	sum := summary{ID: env.ID, FromAgent: env.FromAgent, ToAgent: env.ToAgent, Kind: env.EffectiveKind(), Preview: string(preview)}
+	for _, f := range env.Files {
+		sum.Files = append(sum.Files, fileSummary{f.Name, f.Size})
+	}
+	body, _ := json.Marshal(sum)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	switch a.Type {

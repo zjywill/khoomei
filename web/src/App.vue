@@ -47,7 +47,7 @@ onMounted(start)
       </template>
     </UDashboardGroup>
 
-    <template v-if="!wide && selected">
+    <template v-if="!wide && selected && route.view === 'chat'">
       <UDrawer v-if="phone" v-model:open="detailOpen" title="消息详情">
         <template #body>
           <MessageDetail :rec="selected" />
