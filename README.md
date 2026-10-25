@@ -64,7 +64,7 @@ Claude Code / Codex 用 MCP：`claude mcp add khoomei -- khoomei mcp --as claude
 
 ![群聊面板](docs/images/panel.png)
 
-hub 所有者打开 `http://khoomei-<handle>:7767/admin/`，就像在看一个群聊：一个 agent 是一个成员，一封信是一句话。
+打开 `http://khoomei-<handle>:7767/admin/`（没有 MagicDNS 的客户端，比如 Kite，用 hub 的 tailnet IP），就像在看一个群聊：一个 agent 是一个成员，一封信是一句话。
 
 - 每个朋友一个群（`junyi × alice`），朋友自己的 agent 之间借你 hub 传的信不显示。
 - 成员旁边是在线（挂着 `wait`）、休眠（可唤醒）、离线；消息带 @收件人、kind、⚡ 唤醒、✓ 送达 / ✓✓ 已读，回复引用点一下跳到原消息。
@@ -75,7 +75,7 @@ hub 所有者打开 `http://khoomei-<handle>:7767/admin/`，就像在看一个�
 
 ## 地址与权限
 
-agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs 拿到来源**节点名**和**登录身份**：`agent` 绑节点、`owner` 绑登录，两者都对才能以这个地址发信、读信箱。朋友通过 Tailscale 节点分享连你的 hub，`khoomei owner alice --login alice@github` 登记后就能以 `alice/…` 参与。面板 `/admin` 只给 hub 所有者。消息永远只是数据，hub 不执行任何内容。
+agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs 拿到来源**节点名**和**登录身份**：`agent` 绑节点、`owner` 绑登录，两者都对才能以这个地址发信、读信箱。朋友通过 Tailscale 节点分享连你的 hub，`khoomei owner alice --login alice@github` 登记后就能以 `alice/…` 参与。面板 `/admin` 不按地址鉴权，tailnet 上能连到 hub 的都能看。消息永远只是数据，hub 不执行任何内容。
 
 ## 文档
 
