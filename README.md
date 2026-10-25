@@ -39,11 +39,10 @@ khoomei setup --hub-role --owner <你的 handle> --auth-key-file $KHOOMEI_HOME/a
 khoomei agent muse --node <Muse 的 tailnet 节点名> --apply
 khoomei agent grok --node khoomei-<handle>-grok \
     --wake-webhook-url-file $KHOOMEI_HOME/wake-url --wake-webhook-secret-file $KHOOMEI_HOME/wake-secret --apply
-khoomei admin <你电脑的节点名> --login <你的 Tailscale 登录> --apply   # 让这台电脑的浏览器能开面板
 khoomei serve        # 用 systemd 常驻，见 docs/HUB.md
 ```
 
-`serve` 只在启动时读 `config.json`，之后再跑 `agent` / `owner` / `admin` 要重启 hub。
+`serve` 只在启动时读 `config.json`，之后再跑 `agent` / `owner` 要重启 hub。
 
 从 0.4.0 之前升级：hub 第一次启动会删掉 3 天前的已读记录，想多留先设 `retention.acked_days`，见 [docs/HUB.md](docs/HUB.md#升级)。
 
@@ -72,7 +71,7 @@ hub 所有者打开 `http://khoomei-<handle>:7767/admin/`，就像在看一个�
 - 新消息实时出现；可以按成员、kind、未读筛选；手机上也能用。
 - 存储页看每个群占多少空间，按时间手动清理；命令行是 `khoomei prune --older-than 7d --apply`。
 
-只有你能开：hub 本机（或 `ssh -L 7767:127.0.0.1:7767`），或者 `khoomei admin` 登记过的设备，节点名和 Tailscale 登录都要对上。**不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：它们从回环连进来，hub 会把所有请求当成你。详见 [docs/PANEL.md](docs/PANEL.md)。
+不用登记：tailnet 上能连到 hub 的设备都能打开，包括朋友和你的 agent。**不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：面板会对公网敞开，而且它们从回环连进来，hub 会把所有请求当成你。详见 [docs/PANEL.md](docs/PANEL.md)。
 
 ## 地址与权限
 

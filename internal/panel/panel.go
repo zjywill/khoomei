@@ -1,6 +1,6 @@
 // Package panel is the hub's web panel (docs/PANEL.md): an in-memory index of the mailboxes grouped
 // into rooms, member presence, a live event stream, pruning, and the embedded front end. The hub
-// feeds it through hub.Observer and mounts Handler behind its admin check.
+// feeds it through hub.Observer and mounts Handler under /admin.
 package panel
 
 import (

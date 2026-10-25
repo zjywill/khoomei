@@ -38,34 +38,6 @@ func TestAgentNameBeforeFlags(t *testing.T) {
 	}
 }
 
-func TestAdminCommand(t *testing.T) {
-	home := t.TempDir()
-	for _, args := range [][]string{
-		{"--home", home, "setup", "--hub-role", "--owner", "junyi", "--apply"},
-		{"--home", home, "admin", "junyi-mbp", "--login", "Junyi@GitHub", "--apply"},
-		{"--home", home, "admin", "junyi-mbp", "--login", "junyi@github", "--apply"}, // replaces, no duplicate
-		{"--home", home, "admin", "--login", "junyi@github", "--apply", "ipad"},
-	} {
-		if err := run(args); err != nil {
-			t.Fatalf("%v: %v", args, err)
-		}
-	}
-	if err := run([]string{"--home", home, "admin", "phone", "--apply"}); err == nil {
-		t.Fatal("admin without --login accepted")
-	}
-	cfg, _ := config.Load(home)
-	if len(cfg.Admins) != 2 || cfg.Admins[0] != (config.AdminSpec{Node: "junyi-mbp", Login: "junyi@github"}) {
-		t.Fatalf("admins: %+v", cfg.Admins)
-	}
-	if err := run([]string{"--home", home, "admin", "junyi-mbp", "--remove", "--apply"}); err != nil {
-		t.Fatal(err)
-	}
-	cfg, _ = config.Load(home)
-	if len(cfg.Admins) != 1 || cfg.Admins[0].Node != "ipad" {
-		t.Fatalf("after remove: %+v", cfg.Admins)
-	}
-}
-
 func TestParseAge(t *testing.T) {
 	for in, want := range map[string]int{"24h": 24, "36h": 36, "7d": 168, "0d": 0, "90m": 1} {
 		if got, err := parseAge(in); err != nil || got != want {

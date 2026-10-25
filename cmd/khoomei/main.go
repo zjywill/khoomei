@@ -42,7 +42,6 @@ Commands:
   setup    configure this machine as hub or caller (prints a plan; --apply writes)
   agent    hub owner: register an agent (NAME or OWNER/NAME), bind it to a tailnet node, set its wake adapter
   owner    hub owner: register another person's handle and Tailscale login so their agents may connect
-  admin    hub owner: let a browser on a tailnet node (NODE + its Tailscale login) open the panel at /admin
   prune    hub owner: delete acked (or, for one own agent, pending) records older than a cutoff
   serve    run the hub as an embedded tailnet node
   send     send a message to an agent
@@ -94,7 +93,7 @@ func run(args []string) error {
 	cmds := map[string]func(context.Context, *config.Config, []string) error{
 		"setup": cmdSetup, "agent": cmdAgent, "serve": cmdServe, "send": cmdSend,
 		"inbox": cmdInbox, "wait": cmdWait, "ack": cmdAck, "doctor": cmdDoctor,
-		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner, "admin": cmdAdmin, "prune": cmdPrune,
+		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner, "prune": cmdPrune,
 		"version": func(context.Context, *config.Config, []string) error { fmt.Println("khoomei", hub.Version); return nil },
 	}
 	fn, ok := cmds[rest[0]]
@@ -314,37 +313,6 @@ func cmdOwner(_ context.Context, cfg *config.Config, args []string) error {
 		}
 	}
 	printJSON(cfg.Owners)
-	if *apply {
-		return cfg.Save()
-	}
-	fmt.Fprintln(os.Stderr, "(plan only; add --apply)")
-	return nil
-}
-
-func cmdAdmin(_ context.Context, cfg *config.Config, args []string) error {
-	fs := flag.NewFlagSet("admin", flag.ExitOnError)
-	login := fs.String("login", "", "the node's Tailscale login as WhoIs reports it (junyi@github)")
-	remove := fs.Bool("remove", false, "revoke the node's panel access")
-	apply := fs.Bool("apply", false, "write the config")
-	fs.Parse(nameFirst(args))
-	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
-		return errors.New("usage: khoomei admin NODE --login LOGIN [--remove] [--apply]")
-	}
-	node := strings.TrimSuffix(fs.Arg(0), ".")
-	kept := []config.AdminSpec{}
-	for _, a := range cfg.Admins {
-		if !strings.EqualFold(a.Node, node) {
-			kept = append(kept, a)
-		}
-	}
-	if !*remove {
-		if *login == "" {
-			return errors.New("--login is required: the node alone is not enough to identify you")
-		}
-		kept = append(kept, config.AdminSpec{Node: node, Login: strings.ToLower(*login)})
-	}
-	cfg.Admins = kept
-	printJSON(cfg.Admins)
 	if *apply {
 		return cfg.Save()
 	}

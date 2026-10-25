@@ -6,20 +6,6 @@ import (
 	"strings"
 )
 
-// AuthorizeAdmin: may this identity open the panel (docs/PANEL.md)? Loopback is the owner; a peer
-// needs an admins entry whose node and login both match.
-func (h *Hub) AuthorizeAdmin(id Identity) error {
-	if id.Local {
-		return nil
-	}
-	for _, a := range h.Cfg.Admins {
-		if nodeMatches(a.Node, id.Node) && a.Login != "" && strings.EqualFold(a.Login, id.Login) {
-			return nil
-		}
-	}
-	return ForbiddenError("not an admin node; run on the hub: khoomei admin NODE --login LOGIN --apply")
-}
-
 // hostAllowed checks the Host header against the hub's own names, so a page served from another
 // origin cannot reach /admin through DNS rebinding. Matching is exact: a prefix rule would let
 // khoomei-junyi.attacker.example through.
@@ -45,7 +31,8 @@ func normHost(s string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.Trim(s, "[]"), "."))
 }
 
-// withAdmin guards every /admin path: Host first (no lookup needed), then the admin identity.
+// withAdmin guards every /admin path. The panel is open to every node that may reach the hub at all
+// (tailnet address, not denied by policy, as withIdentity checks); the only extra rule is the Host check.
 func (h *Hub) withAdmin(fn func(http.ResponseWriter, *http.Request, Identity)) http.HandlerFunc {
 	return h.withIdentity(func(w http.ResponseWriter, r *http.Request, id Identity) {
 		hdr := w.Header()
@@ -56,10 +43,6 @@ func (h *Hub) withAdmin(fn func(http.ResponseWriter, *http.Request, Identity)) h
 		hdr.Set("Cache-Control", "no-store")
 		if !h.hostAllowed(r.Host) {
 			fail(w, ForbiddenError("unexpected Host "+r.Host))
-			return
-		}
-		if err := h.AuthorizeAdmin(id); err != nil {
-			fail(w, err)
 			return
 		}
 		fn(w, r, id)

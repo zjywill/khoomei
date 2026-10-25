@@ -257,7 +257,7 @@ func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
 		"retention": ret, "rooms": rooms})
 }
 
-// handlePrune is the panel's only write. Besides the hub's admin and Host checks it insists on a JSON
+// handlePrune is the panel's only write. Besides the hub's Host check it insists on a JSON
 // body and the X-Khoomei-Panel header, which a cross-site page cannot send without a CORS preflight
 // that the hub never answers, and on an Origin, when present, that matches Host.
 func (p *Panel) handlePrune(w http.ResponseWriter, r *http.Request) {

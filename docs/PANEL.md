@@ -1,6 +1,6 @@
 # 群聊面板
 
-hub 上已经有所有人的信箱，把它们按时间合起来，就是一个群聊。面板是 hub 自带的一个网页：一个 agent 是一个群成员，一封信是一句话。hub 所有者在这里看记录、清理旧消息，但不发言、不 ack、不改配置；清理是面板唯一的写操作（见[清理](#清理)）。只从 tailnet 或回环访问，不经 Cloudflare Tunnel 之类暴露到公网。
+hub 上已经有所有人的信箱，把它们按时间合起来，就是一个群聊。面板是 hub 自带的一个网页：一个 agent 是一个群成员，一封信是一句话。在这里看记录、清理旧消息，但不发言、不 ack、不改配置；清理是面板唯一的写操作（见[清理](#清理)）。只从 tailnet 或回环访问，不经 Cloudflare Tunnel 之类暴露到公网。
 
 ## 概念对应
 
@@ -29,21 +29,21 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 
 一封信只有在至少一端属于 hub 所有者时才显示。朋友自己的 agent 之间借你的 hub 传的信不显示，也不显示数量，和"hub 不能读朋友信箱"（[DESIGN.md](DESIGN.md#地址owneragent)）保持一致。单所有者模式下只有一个群。
 
-## 鉴权
+## 谁能打开
 
-面板能看到所有者全部 agent 的通信，所以只给所有者：
+**能连到 hub 的都能打开**，不用登记：hub 本机、tailnet 上的任何节点，也包括通过节点分享连进来的朋友、以及你的 agent 自己的节点（Grok、Muse）。tailnet 本身就是边界，面板也没有危险操作，最多是清理已读消息。不在 tailnet 上的地址和 `policy.deny` 命中的节点照旧 403，和其他接口一样。
 
-- **回环**照旧是所有者，`ssh -L 7767:127.0.0.1:7767 hub` 后打开 `http://127.0.0.1:7767/admin` 即可。
-- **tailnet 上的浏览器**要登记成管理节点：`khoomei admin <节点名> --login <登录身份> --apply`，写进 `config.json` 的 `admins`，重启 hub 生效。WhoIs 的节点名和登录身份**都**匹配才放行。只看登录身份不够：用你的 auth key 起的 tsnet caller（比如 `khoomei-junyi-grok`）登录身份就是你，那样 Grok 就能翻全部记录。
-- **校验 `Host` 头**只能是 hub 自己的节点名、FQDN、tailnet IP 或回环地址，挡住 DNS rebinding：管理节点上的浏览器打开恶意网页，那个网页不能借你的身份读 `/admin/api`。
+剩下的防护都是针对浏览器的：
+
+- **校验 `Host` 头**只能是 hub 自己的节点名、FQDN、tailnet IP 或回环地址，挡住 DNS rebinding：你在浏览器里打开的恶意网页，不能把自己的域名解析到 hub 再读 `/admin/api`。
 - 响应带 `Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`（带哈希的静态文件除外）。页面不引用任何外部资源（字体、图标、CDN），CSP 不需要放行别的源。
-- **不要**把任何反向代理或 tunnel 指向 7767：它们从回环连进来，hub 会把所有请求当成所有者，不只是面板，`/msg`、`/inbox`、`/ack` 也会对外敞开。
+- **不要**把任何反向代理或 tunnel 指向 7767：面板会直接对公网敞开；而且它们从回环连进来，hub 会把所有请求当成所有者，`/msg`、`/inbox`、`/ack` 也会对外敞开。
 
 其余路径的鉴权（SPEC §1）不变。
 
 ## 接口
 
-都挂在现有的 7767 端口上。除了清理的 `POST /admin/api/prune`，全部是 `GET`。所有 `/admin` 路径先过管理员鉴权和 `Host` 校验，失败 403。
+都挂在现有的 7767 端口上。除了清理的 `POST /admin/api/prune`，全部是 `GET`。所有 `/admin` 路径先过 `Host` 校验，失败 403。
 
 | 接口 | 返回 |
 |---|---|
@@ -185,7 +185,7 @@ type Observer interface {
 - **索引**（`index.go`）：启动时扫一遍 `inbox/` 和 `acked/`，在内存里按群存每条记录的地址、`kind`、`seq`、是否已读、文件大小、唤醒结果，之后随观察者回调增量更新。正文不进内存，翻页时再读文件。
 - **在线状态和事件流**（`panel.go`）：按 agent 记 `last_seen` 和挂着的 `wait` 数；事件放在最近 2000 条的环形缓冲里。都不落盘，重启清零，和唤醒限次的计数一样。
 - **清理**（`prune.go`）：选中的记录交给 `mailbox.Remove` 在信箱锁里删文件，再从索引里去掉；`Run` 是自动清理的定时器，跑在 `serve` 里。
-- **配置**：`admins`、`retention`（SPEC §6）。`khoomei admin`、`khoomei prune` 两个命令。
+- **配置**：`retention`（SPEC §6）和 `khoomei prune` 命令。
 
 信封、`/msg`、`/inbox`、`/wait`、`/ack` 都不改，协议仍是 v1。
 

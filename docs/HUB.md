@@ -76,12 +76,9 @@ install -m 755 /tmp/khoomei /usr/local/bin/khoomei && systemctl restart khoomei
 
 ## 面板
 
-hub 自带一个只看记录、能清理旧消息的群聊面板（[PANEL.md](PANEL.md)），地址是 `http://khoomei-<handle>:7767/admin/`。只有 hub 所有者能开：
+hub 自带一个只看记录、能清理旧消息的群聊面板（[PANEL.md](PANEL.md)），地址是 `http://khoomei-<handle>:7767/admin/`。tailnet 上能连到 hub 的设备都能直接打开，不用登记；不在 tailnet 上的话，`ssh -L 7767:127.0.0.1:7767 <hub>` 之后打开 `http://127.0.0.1:7767/admin/`。
 
-- 在 hub 机器上，或 `ssh -L 7767:127.0.0.1:7767 <hub>` 之后打开 `http://127.0.0.1:7767/admin/`；
-- 在 tailnet 上你自己的电脑或手机上，先在 hub 上登记那台设备：`$K admin <设备的节点名> --login <你的 Tailscale 登录> --apply`，重启 hub。
-
-**不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：它们从回环连进来，hub 会把每个请求都当成所有者，不只是面板，收发信接口也一起敞开了。
+**不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：面板会对公网敞开；而且它们从回环连进来，hub 会把每个请求都当成所有者，收发信接口也一起敞开了。
 
 ## 常用命令（在 hub 机器上）
 
@@ -89,9 +86,8 @@ hub 自带一个只看记录、能清理旧消息的群聊面板（[PANEL.md](PA
 $K doctor                      # 状态
 $K agent <name> --node … --apply
 $K owner alice --login alice@github --apply   # 朋友
-$K admin junyi-mbp --login junyi@github --apply   # 让这台设备能开面板
 $K prune --older-than 7d       # 看看能清掉多少；加 --apply 才删
 curl -s http://127.0.0.1:7767/health
 ```
 
-`agent` / `owner` / `admin` 改的是 `config.json`，`serve` 只在启动时读，改完 `systemctl restart khoomei`。
+`agent` / `owner` 改的是 `config.json`，`serve` 只在启动时读，改完 `systemctl restart khoomei`。

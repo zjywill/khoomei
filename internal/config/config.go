@@ -44,13 +44,6 @@ type OwnerSpec struct {
 	Login string `json:"login"`
 }
 
-// AdminSpec lets a browser on a tailnet node open the hub's panel (docs/PANEL.md). Both the node
-// and its login must match: a tsnet caller started with the owner's auth key carries the owner's login.
-type AdminSpec struct {
-	Node  string `json:"node"`
-	Login string `json:"login"`
-}
-
 // Retention is how long the hub keeps acknowledged records (docs/PANEL.md#清理). Pending records are never
 // pruned automatically, and nothing younger than MinPruneAge is pruned at all.
 type Retention struct {
@@ -90,7 +83,6 @@ type Config struct {
 	Policy    Policy                `json:"policy"`
 	Owners    map[string]*OwnerSpec `json:"owners,omitempty"` // hub: other people whose agents may connect
 	Agents    map[string]*AgentSpec `json:"agents"`           // hub: keyed by full address once Owner is set
-	Admins    []AdminSpec           `json:"admins,omitempty"` // hub: nodes whose browsers may open the panel
 	Retention Retention             `json:"retention"`        // hub: automatic pruning of acked records
 
 	Home string `json:"-"`

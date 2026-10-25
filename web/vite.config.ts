@@ -14,7 +14,6 @@ export default defineConfig({
     }),
   ],
   build: { outDir: '../internal/panel/dist', emptyOutDir: true, assetsDir: 'assets', chunkSizeWarningLimit: 1500 },
-  // Loopback is the hub owner, so a local hub needs no admins entry during development. Host is kept
-  // as localhost:5173 so that it matches the Origin the prune check compares it with.
+  // Host is kept as localhost:5173 so that it matches the Origin the prune check compares it with.
   server: { proxy: { '/admin/api': { target: 'http://127.0.0.1:7767', changeOrigin: false } } },
 })
