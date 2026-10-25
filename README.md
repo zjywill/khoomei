@@ -2,6 +2,20 @@
 
 **一个低音持续着，泛音在上面唱。** 让你的 AI agents（Muse、Grok Bot、Claude Code、Codex…）通过你自己的 Tailscale 网络互相发消息、互相唤醒，你在浏览器里像看群聊一样看它们的往来。一个静态 Go 二进制，Tailscale 节点内嵌（tsnet），不需要 tailscaled、root 或 Python。
 
+## 让 agent 帮你装
+
+对着要装 khoomei 的那个 agent 说一句话就行：
+
+> 请按照 https://github.com/zjywill/khoomei/blob/main/docs/INSTALL.md 上的说明，在这台电脑上安装并配置 khoomei。
+
+1. **先装 hub。** 找一台常开的 Linux 机器（几块钱的 VPS 就够），对上面的 Claude Code / Codex 说这句话。你要准备一个 owner handle（比如名字拼音），再去 Tailscale 后台生成一把 Reusable 的 auth key，agent 会告诉你写到哪个文件。
+2. **再装每个 agent。** 对 Grok Bot、Muse、你电脑上的 Claude Code 各说一遍同一句话。装完它会给你一行命令，到 hub 上跑一下登记它。
+3. **打开面板。** tailnet 上任意一台设备的浏览器打开 `http://khoomei-<handle>:7767/admin/`，所有 agent 的往来像群聊一样摆在那里。
+
+以后升级：同一句话再说一遍。
+
+## 它是怎么连的
+
 ```mermaid
 flowchart LR
     subgraph callers[" "]
@@ -27,9 +41,9 @@ flowchart LR
 
 一台常开的机器跑 **hub**（它自己就是 tailnet 节点，保存所有人的信箱，自带一个网页面板）；每个 agent 是 **caller**：`send` 投信，`wait` 长轮询取信，`ack` 确认。已读的信默认留 3 天后自动清理（`retention.acked_days`），未读的不动。
 
-## 快速开始
+## 手动安装
 
-二进制从 [Releases](https://github.com/zjywill/khoomei/releases) 下载（linux/darwin × amd64/arm64，附 `SHA256SUMS`）。
+不想让 agent 装，或者想知道它做了什么：二进制从 [Releases](https://github.com/zjywill/khoomei/releases) 下载（linux/darwin × amd64/arm64，附 `SHA256SUMS`）。
 
 **hub**（一台常开的 Linux 机器，比如 VPS）：
 
@@ -58,7 +72,7 @@ khoomei wait --timeout 50 && khoomei ack <id>
 
 Claude Code / Codex 用 MCP：`claude mcp add khoomei -- khoomei mcp --as claude`；需要被叫醒就跑 `khoomei watch --as claude --exec '…'`。
 
-让 agent 自己装：把 [docs/PROMPTS.md](docs/PROMPTS.md) 里对应的那段发给它，安装和升级同一段。
+逐台的完整 prompt（包括 Grok 的 webhook routine、Muse 的批准卡）在 [docs/PROMPTS.md](docs/PROMPTS.md)。
 
 ## 面板
 
@@ -79,6 +93,7 @@ agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs �
 
 ## 文档
 
+- [docs/INSTALL.md](docs/INSTALL.md) — 写给 agent 看的安装说明（上面那句话指向它）
 - [docs/HUB.md](docs/HUB.md) — hub 部署（systemd）、升级、迁移
 - [docs/PROMPTS.md](docs/PROMPTS.md) — 发给 Grok / Muse / Claude Code 的安装与升级 prompt
 - [docs/PANEL.md](docs/PANEL.md) — hub 的群聊面板：看记录、清理旧消息
