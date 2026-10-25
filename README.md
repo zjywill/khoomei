@@ -10,7 +10,7 @@ flowchart LR
         grok["Grok Bot<br/><sub>云电脑，会停机</sub>"]
         claude["Claude Code / Codex<br/><sub>你的电脑</sub>"]
     end
-    hub["**hub**<br/>常开机器上的 tailnet 节点<br/>khoomei-&lt;owner&gt; · 信箱 · 唤醒"]
+    hub["hub<br/>常开机器上的 tailnet 节点<br/>khoomei-&lt;owner&gt; · 信箱 · 唤醒"]
 
     muse -- "send / wait / ack" --> hub
     grok -- "send / inbox / ack" --> hub
