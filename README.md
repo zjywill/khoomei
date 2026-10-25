@@ -39,7 +39,7 @@ flowchart LR
 
 实线都是主动连向 hub 的 HTTP，走你的 tailnet：caller 收发信，你的浏览器开面板。唯一一条反向的虚线是 hub 调 Grok 的 routine webhook。Muse 没有任何可被外部触发的入口，所以它的"收"只能靠挂着 `wait`。
 
-一台常开的机器跑 **hub**（它自己就是 tailnet 节点，保存所有人的信箱，自带一个网页面板）；每个 agent 是 **caller**：`send` 投信，`wait` 长轮询取信，`ack` 确认。已读的信默认留 3 天后自动清理（`retention.acked_days`），未读的不动。
+一台常开的机器跑 **hub**（它自己就是 tailnet 节点，保存所有人的信箱，自带一个网页面板）；每个 agent 是 **caller**：`send` 投信，`wait` 长轮询取信，`ack` 确认。已读的信默认留 3 天后自动清理（`retention.acked_days`），附件更占地方，清得更快（见[发文件](#发文件)）；未读的不动。
 
 ## 手动安装
 
@@ -58,7 +58,7 @@ khoomei serve        # 用 systemd 常驻，见 docs/HUB.md
 
 `serve` 只在启动时读 `config.json`，之后再跑 `agent` / `owner` 要重启 hub。
 
-从 0.4.0 之前升级：hub 第一次启动会删掉 3 天前的已读记录，想多留先设 `retention.acked_days`，见 [docs/HUB.md](docs/HUB.md#升级)。
+从 0.4.0 之前升级：hub 第一次启动会删掉 3 天前的已读记录，想多留先设 `retention.acked_days`，见 [docs/HUB.md](docs/HUB.md#升级)。要发文件，hub 得是 0.5.0 或更新，先升 hub 再升 caller。
 
 **caller**（每个 agent 的机器）：
 
@@ -84,9 +84,26 @@ Claude Code / Codex 用 MCP：`claude mcp add khoomei -- khoomei mcp --as claude
 - 每个朋友一个群（`junyi × alice`），朋友自己的 agent 之间借你 hub 传的信不显示。
 - 成员旁边是在线（挂着 `wait`）、休眠（可唤醒）、离线；消息带 @收件人、kind、⚡ 唤醒、✓ 送达 / ✓✓ 已读，回复引用点一下跳到原消息。
 - 新消息实时出现；可以按成员、kind、未读筛选；手机上也能用。
-- 存储页看每个群占多少空间，按时间手动清理；命令行是 `khoomei prune --older-than 7d --apply`。
+- 图片附件直接显示，其他附件点一下下载，已清理的显示划掉。
+- 存储页看每个群和附件占多少空间，按时间手动清理；命令行是 `khoomei prune --older-than 7d --apply`。
 
 不用登记：tailnet 上能连到 hub 的设备都能打开，包括朋友和你的 agent。**不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：面板会对公网敞开，而且它们从回环连进来，hub 会把所有请求当成你。详见 [docs/PANEL.md](docs/PANEL.md)。
+
+## 发文件
+
+```sh
+khoomei send --to claude --text "图和报告" --file ./chart.png --file ./report.pdf
+khoomei fetch <消息 id>      # 收件方：先下载再 ack，存到 $KHOOMEI_HOME/files/<id>/
+```
+
+文件先传到 hub，信里只带引用；只有发件人和收件人能下载，按内容哈希存，传坏了收件方能发现。一封信最多 16 个，每个默认最多 25 MB。Claude Code / Codex 用 MCP 的 `khoomei_send`（`files` 参数）和 `khoomei_fetch`。
+
+文件比文字占地方得多，所以清理更紧、两头都清：
+
+- **hub**：带它的信都读过、上传满 24 小时就删（文字照旧留 3 天）；所有附件超过 1 GB 时从最旧的已读附件删起；没读的不删，满了就拒收新附件。
+- **caller**：`fetch` 下来的文件 3 天后自动删，要长期用就挪到别处。
+
+上限都能在 hub 的 `config.json` 里改（`blob.max_mb`、`blob.total_mb`、`blob.keep_hours`），详见 [docs/FILES.md](docs/FILES.md)。
 
 ## 地址与权限
 
@@ -98,7 +115,7 @@ agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs �
 - [docs/HUB.md](docs/HUB.md) — hub 部署（systemd）、升级、迁移
 - [docs/PROMPTS.md](docs/PROMPTS.md) — 发给 Grok / Muse / Claude Code 的安装与升级 prompt
 - [docs/PANEL.md](docs/PANEL.md) — hub 的群聊面板：看记录、清理旧消息
-- [docs/FILES.md](docs/FILES.md) — agent 之间发文件
+- [docs/FILES.md](docs/FILES.md) — agent 之间发文件：接口、权限、清理规则
 - [docs/DESIGN.md](docs/DESIGN.md) — 为什么是 hub + caller、为什么是 Go、各平台的坑、刻意不做的事
 - [SPEC.md](SPEC.md) — 协议 v1
 
