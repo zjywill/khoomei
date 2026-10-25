@@ -377,8 +377,58 @@ func hubClient(ctx context.Context, cfg *config.Config) (*client.Client, func(),
 		node.Close()
 		return nil, noop, fmt.Errorf("tailnet: %w", err)
 	}
-	hc := &http.Client{Transport: &http.Transport{DialContext: node.Dial}}
+	// Up returns as soon as the restored node is Running, before the netmap and MagicDNS are
+	// usable, so a dial by name can hang. Wait for the hub to show up as a peer and dial its IP.
+	host, port, _ := net.SplitHostPort(addr)
+	target := addr
+	if net.ParseIP(host) == nil {
+		ip, err := waitForPeer(ctx, node, host, 45*time.Second)
+		if err != nil {
+			node.Close()
+			return nil, noop, fmt.Errorf("tailnet: %w", err)
+		}
+		target = net.JoinHostPort(ip, port)
+		if os.Getenv("KHOOMEI_DEBUG") != "" {
+			logf("hub %s is peer %s", host, ip)
+		}
+	}
+	dial := func(ctx context.Context, network, _ string) (net.Conn, error) { return node.Dial(ctx, network, target) }
+	hc := &http.Client{Transport: &http.Transport{DialContext: dial}}
 	return client.New("http://"+addr, hc), func() { node.Close() }, nil
+}
+
+// waitForPeer polls the embedded node's status until a peer named host (short name or FQDN)
+// appears, and returns its tailnet IPv4.
+func waitForPeer(ctx context.Context, node *tsnet.Server, host string, timeout time.Duration) (string, error) {
+	lc, err := node.LocalClient()
+	if err != nil {
+		return "", err
+	}
+	want := strings.ToLower(strings.TrimSuffix(host, "."))
+	deadline := time.Now().Add(timeout)
+	for {
+		st, err := lc.Status(ctx)
+		if err == nil {
+			for _, p := range st.Peer {
+				dns := strings.ToLower(strings.TrimSuffix(p.DNSName, "."))
+				if strings.EqualFold(p.HostName, want) || dns == want || strings.HasPrefix(dns, want+".") {
+					for _, ip := range p.TailscaleIPs {
+						if ip.Is4() {
+							return ip.String(), nil
+						}
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("hub %q not seen on the tailnet within %s (is the hub running, and is this node allowed to reach it?)", host, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // agentName is the address this command acts as: --as (qualified with this machine's owner when bare),
