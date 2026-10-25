@@ -12,6 +12,27 @@ hub 不是第三方中心节点：它就是你的一台机器，身份靠 Tailsc
 
 ## 两个方向的机制不同
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as Muse
+    participant H as hub
+    participant W as Grok webhook
+    participant G as Grok routine
+
+    M->>H: POST /msg {to: grok, wake: now}
+    H-->>M: 202（已收下，≠ 已读）
+    H->>W: POST 摘要 {id, from, preview}
+    W-->>G: 启动一次运行
+    M->>H: GET /wait?agent=muse（挂起 ≤ 90 s）
+    G->>H: GET /inbox → 看到消息
+    G->>H: POST /msg {to: muse, reply_to: id}
+    H-->>M: /wait 立即返回这条回复
+    G->>H: POST /ack [id]
+    M->>H: POST /ack [reply id]
+```
+
+
 - **推**：发信带 `--wake now`，hub 落盘后调收件 agent 的 wake adapter（webhook 或 exec）。Grok Bot 的 routine webhook 实测 13 秒内醒来、处理、ack。
 - **拉**：hub 没法连 Muse，Muse 自己挂 `wait`（长轮询，有信立即返回）。Muse 没有任何外部触发入口（只有按时间的 scheduled tasks），这是平台上限。
 

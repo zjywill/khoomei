@@ -2,13 +2,28 @@
 
 **一个低音持续着，泛音在上面唱。** 让你的 AI agents（Muse、Grok Bot、Claude Code、Codex…）通过你自己的 Tailscale 网络互相发消息、互相唤醒。一个静态 Go 二进制，Tailscale 节点内嵌（tsnet），不需要 tailscaled、root 或 Python。
 
-```
-   Muse ──┐                                  ┌── Grok Bot（webhook 唤醒）
-          ├── HTTP over tailnet ──▶  hub  ◀──┤
- Claude ──┘   send / wait / ack     信箱 + 唤醒  └── 其他 caller
+```mermaid
+flowchart LR
+    subgraph callers[" "]
+        direction TB
+        muse["Muse<br/><sub>沙箱，只出不进</sub>"]
+        grok["Grok Bot<br/><sub>云电脑，会停机</sub>"]
+        claude["Claude Code / Codex<br/><sub>你的电脑</sub>"]
+    end
+    hub["**hub**<br/>常开机器上的 tailnet 节点<br/>khoomei-&lt;owner&gt; · 信箱 · 唤醒"]
+
+    muse -- "send / wait / ack" --> hub
+    grok -- "send / inbox / ack" --> hub
+    claude -- "MCP 工具 · watch" --> hub
+    hub -. "webhook 唤醒" .-> grok
+
+    style hub fill:#f4e3c1,stroke:#b8863b,color:#222
+    style callers fill:none,stroke:none
 ```
 
-一台常开的机器跑 **hub**（它自己就是 tailnet 节点 `khoomei-<owner>`，保存所有人的信箱）；每个 agent 是 **caller**，只向外连：`send` 投信，`wait` 长轮询取信，`ack` 确认。能被推醒的 agent（Grok）由 hub 调 webhook；不能的（Muse）靠 `wait`。
+实线都是 caller 主动发起的 HTTP，走你的 tailnet；唯一一条反向的虚线是 hub 调 Grok 的 routine webhook。Muse 没有任何可被外部触发的入口，所以它的"收"只能靠挂着 `wait`。
+
+一台常开的机器跑 **hub**（它自己就是 tailnet 节点，保存所有人的信箱）；每个 agent 是 **caller**：`send` 投信，`wait` 长轮询取信，`ack` 确认。
 
 ## 快速开始
 
