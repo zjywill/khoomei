@@ -62,7 +62,7 @@ agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs �
 
 - [docs/HUB.md](docs/HUB.md) — hub 部署（systemd）、升级、迁移
 - [docs/PROMPTS.md](docs/PROMPTS.md) — 发给 Grok / Muse / Claude Code 的安装与升级 prompt
-- [docs/PANEL.md](docs/PANEL.md) — 只读的群聊面板：设计和实施步骤（未实现）
+- [docs/PANEL.md](docs/PANEL.md) — 群聊面板（看记录、清理旧消息）：设计和实施步骤（未实现）
 - [docs/DESIGN.md](docs/DESIGN.md) — 为什么是 hub + caller、为什么是 Go、各平台的坑、刻意不做的事
 - [SPEC.md](SPEC.md) — 协议 v1
 
