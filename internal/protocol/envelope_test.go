@@ -40,6 +40,23 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestEmptyMessageRejected(t *testing.T) {
+	for _, text := range []string{"", "   ", "\n"} {
+		e := New("muse", "grok", text)
+		if e.Validate() == nil {
+			t.Errorf("text %q with no data should be rejected", text)
+		}
+		e.Data = []byte("null")
+		if e.Validate() == nil {
+			t.Errorf("text %q with null data should be rejected", text)
+		}
+		e.Data = []byte(`{"k":1}`)
+		if err := e.Validate(); err != nil {
+			t.Errorf("data without text should pass: %v", err)
+		}
+	}
+}
+
 func TestMinWake(t *testing.T) {
 	if MinWake(WakeNow, WakeBatch) != WakeBatch || MinWake(WakeNone, WakeNow) != WakeNone || MinWake(WakeNow, WakeNow) != WakeNow {
 		t.Fatal("MinWake order wrong")

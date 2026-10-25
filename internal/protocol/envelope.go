@@ -97,6 +97,8 @@ func (e *Envelope) Validate() error {
 		return errors.New("bad kind")
 	case e.ReplyTo != "" && !idRe.MatchString(e.ReplyTo):
 		return errors.New("bad reply_to")
+	case strings.TrimSpace(e.Text) == "" && (len(e.Data) == 0 || string(e.Data) == "null"):
+		return errors.New("empty message: text or data is required")
 	}
 	return nil
 }

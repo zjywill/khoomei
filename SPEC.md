@@ -35,7 +35,7 @@ agent 用 **`owner/agent`** 两层地址寻址：`junyi/grok`、`alice/muse`。�
 ## 2. 接口
 
 ### `GET /health`
-不鉴权。`{"ok":true,"v":1,"version":"0.3.4","owner":"junyi"}`
+不鉴权。`{"ok":true,"v":1,"version":"0.3.5","owner":"junyi"}`
 
 ### `POST /msg`
 Body 是一封信封（§3），上限 256 KiB，`Content-Type: application/json`。
@@ -87,10 +87,10 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 | `from_agent` / `to_agent` | 是 | 地址，`owner/agent` 或裸名（§0）。hub 存储前把裸名规范化为全名 |
 | `ts` | 是 | UTC，`YYYY-MM-DDTHH:MM:SSZ` |
 | `kind` | 否 | ≤32 字符的短标签，默认 `text`。约定：`text`、`request`、`reply`、`notice` |
-| `text` | 否 | 正文 |
+| `text` | 条件 | 正文。`text`（去首尾空白后非空）和 `data` 至少要有一个，否则 400 `empty message` |
 | `reply_to` | 否 | 回复哪封信的 `id` |
 | `wake` | 否 | 发件方**希望**的提醒级别：`now` / `batch`（默认）/ `none` |
-| `data` | 否 | 任意 JSON，结构化负载 |
+| `data` | 条件 | 任意 JSON，结构化负载。见 `text` |
 
 **出现其他字段一律 400。**
 

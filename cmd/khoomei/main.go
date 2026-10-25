@@ -400,6 +400,9 @@ func cmdSend(ctx context.Context, cfg *config.Config, args []string) error {
 	if *to == "" {
 		return errors.New("--to is required")
 	}
+	if strings.TrimSpace(*text) == "" && *data == "" {
+		return errors.New("--text or --data is required; the hub refuses empty messages")
+	}
 	from, err := agentName(cfg, *as)
 	if err != nil {
 		return err
