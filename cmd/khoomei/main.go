@@ -101,6 +101,15 @@ func run(args []string) error {
 	return fn(ctx, cfg, rest[1:])
 }
 
+// nameFirst lets a subcommand take its positional NAME before its flags ("agent muse --node x"):
+// Go's flag package stops at the first non-flag, so the leading non-flag is moved to the end.
+func nameFirst(args []string) []string {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return append(append([]string{}, args[1:]...), args[0])
+	}
+	return args
+}
+
 func resolveHome(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
@@ -238,7 +247,7 @@ func cmdAgent(_ context.Context, cfg *config.Config, args []string) error {
 	wakeMax := fs.String("wake-max", "", "cap: none | batch | now")
 	remove := fs.Bool("remove", false, "unregister the agent")
 	apply := fs.Bool("apply", false, "write the config")
-	fs.Parse(args)
+	fs.Parse(nameFirst(args))
 	if fs.NArg() != 1 || !protocol.ValidAddress(fs.Arg(0)) {
 		return errors.New("usage: khoomei agent NAME|OWNER/NAME [flags]")
 	}
@@ -282,7 +291,7 @@ func cmdOwner(_ context.Context, cfg *config.Config, args []string) error {
 	login := fs.String("login", "", "the person's Tailscale login as WhoIs reports it (alice@github, bob@example.com)")
 	remove := fs.Bool("remove", false, "unregister the owner (their agents stay registered but can no longer connect)")
 	apply := fs.Bool("apply", false, "write the config")
-	fs.Parse(args)
+	fs.Parse(nameFirst(args))
 	if fs.NArg() != 1 || !protocol.ValidAgent(fs.Arg(0)) {
 		return errors.New("usage: khoomei owner HANDLE --login LOGIN [--apply]")
 	}

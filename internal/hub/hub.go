@@ -17,7 +17,7 @@ import (
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
-const Version = "0.3.5"
+const Version = "0.3.6"
 
 var (
 	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
