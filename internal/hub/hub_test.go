@@ -133,8 +133,20 @@ func TestRoundTripWithBareNames(t *testing.T) {
 	}
 }
 
+// group puts members into a fresh group on h.
+func group(t *testing.T, h *Hub, name string, members ...string) {
+	t.Helper()
+	if err := h.Groups.Create(name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ChangeGroup(name, members, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFriendOwner(t *testing.T) {
-	_, srv := newTestHub(t)
+	h, srv := newTestHub(t)
+	group(t, h, "proj", "junyi/grok", "alice/muse")
 	ctx := context.Background()
 	owner := client.New(srv.URL, nil)
 

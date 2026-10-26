@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/zjywill/khoomei/internal/blobs"
@@ -343,6 +344,9 @@ type roomUsage struct {
 }
 
 func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
+	if !ownerOnly(w, r) {
+		return
+	}
 	sizes := map[string]int64{}
 	var files usage
 	if p.blobs != nil {
@@ -354,7 +358,7 @@ func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	p.mu.Lock()
 	seen := map[string]map[string]bool{} // room → attachments counted
-	byRoom := map[string]*roomUsage{RoomSelf: {ID: RoomSelf}}
+	byRoom := map[string]*roomUsage{RoomPrivate: {ID: RoomPrivate}}
 	oldest := map[string]int64{}
 	for _, e := range p.byKey {
 		ru := byRoom[e.Room]
@@ -383,14 +387,16 @@ func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	rooms := []roomUsage{*byRoom[RoomSelf]} // self first, then friends by name, then the hidden rest
+	rooms := []roomUsage{*byRoom[RoomPrivate]} // private first, then groups by name, then earlier and hidden
 	for _, id := range sortedKeys(byRoom) {
-		if id != RoomSelf && id != RoomHidden {
+		if strings.HasPrefix(id, groupPrefix) {
 			rooms = append(rooms, *byRoom[id])
 		}
 	}
-	if h := byRoom[RoomHidden]; h != nil {
-		rooms = append(rooms, *h)
+	for _, id := range []string{RoomEarlier, RoomHidden} {
+		if u := byRoom[id]; u != nil {
+			rooms = append(rooms, *u)
+		}
 	}
 	ret := map[string]any{"acked_days": p.cfg.Retention.AckedDaysOrDefault(), "max_mb": p.cfg.Retention.MaxMB, "last_pruned": p.lastGone}
 	if !p.lastRun.IsZero() {
@@ -407,7 +413,7 @@ func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
 // rules of every panel write, see panelWrite.
 func (p *Panel) handlePrune(w http.ResponseWriter, r *http.Request) {
 	var req PruneRequest
-	if !panelWrite(w, r, &req) {
+	if !panelWrite(w, r, &req) || !ownerOnly(w, r) {
 		return
 	}
 	if req.Room == RoomHidden && req.What != "acked" {

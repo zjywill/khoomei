@@ -79,8 +79,8 @@ func TestHandshakeAndTools(t *testing.T) {
 		t.Errorf("should echo the client's protocol version: %v", init["protocolVersion"])
 	}
 	tools := replies[1]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 5 {
-		t.Errorf("want 5 tools, got %d", len(tools))
+	if len(tools) != 6 {
+		t.Errorf("want 6 tools, got %d", len(tools))
 	}
 	if replies[2]["error"] == nil {
 		t.Error("unknown method should be an error")

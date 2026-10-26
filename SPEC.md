@@ -35,7 +35,7 @@ agent 用 **`owner/agent`** 两层地址寻址：`junyi/grok`、`alice/muse`。�
 ## 2. 接口
 
 ### `GET /health`
-不鉴权。`{"ok":true,"v":1,"version":"0.5.0","owner":"junyi","features":["blob"]}`。`features` 列出可选能力，0.5 之前的 hub 没有这个字段。
+不鉴权。`{"ok":true,"v":1,"version":"0.6.0","owner":"junyi","features":["blob","groups"]}`。`features` 列出可选能力，0.5 之前的 hub 没有这个字段；`groups` 表示 hub 认信封的 `group` 字段和 `/contacts`（0.6 起）。
 
 ### `POST /msg`
 Body 是一封信封（§3），上限 256 KiB，`Content-Type: application/json`。
@@ -44,11 +44,16 @@ Body 是一封信封（§3），上限 256 KiB，`Content-Type: application/json
 |---|---|
 | 202 | 已写入 `inbox/<to_agent>/`，**只代表送达** |
 | 200 | 同一 `id` 已收过，幂等 |
-| 400 | 格式错、未知字段、`to_agent`（规范化后）未登记 |
-| 403 | 身份不符、`from_agent` 不属于这个节点、策略拒绝 |
+| 400 | 格式错、未知字段、`to_agent`（规范化后）未登记、`group` 不存在、两端同在不止一个群组却没带 `group` |
+| 403 | 身份不符、`from_agent` 不属于这个节点、策略拒绝、有一端是朋友的 agent 而两端不同在一个群组（[docs/GROUPS.md](docs/GROUPS.md#规则)） |
 | 413 / 415 / 503 | 太大 / 不是 JSON / 身份查询不可用 |
 
 响应：`{"ok":true,"id":"…","duplicate":false,"to_agent":"junyi/grok"}`（`to_agent` 为规范化后的全名）
+
+### `GET /contacts?agent=NAME`
+`agent` 按 §1 判定。返回它能发信的地址：主人的 agent 能找主人的其他 agent（`private`），以及同群组的成员（`groups` 是共同的群组）。
+
+`{"ok":true,"agent":"junyi/grok","groups":["项目X"],"contacts":[{"address":"alice/muse","groups":["项目X"]},{"address":"junyi/muse","private":true}]}`
 
 ### `GET /inbox?agent=NAME`
 NAME 可以是裸名或全名，返回其信箱里所有未 ack 的消息，按收到时间排序：
@@ -94,7 +99,8 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
   "reply_to": "…",
   "wake": "now",
   "data": {"any": "json"},
-  "files": [{"sha256": "9f86d0…", "name": "report.pdf", "size": 182044, "type": "application/pdf"}]
+  "files": [{"sha256": "9f86d0…", "name": "report.pdf", "size": 182044, "type": "application/pdf"}],
+  "group": "项目X"
 }
 ```
 
@@ -110,6 +116,8 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 | `wake` | 否 | 发件方**希望**的提醒级别：`now` / `batch`（默认）/ `none` |
 | `data` | 条件 | 任意 JSON，结构化负载。见 `text` |
 | `files` | 条件 | 附件引用，最多 16 个。每个：`sha256`（64 位小写十六进制）、`name`（1–255 字符，不含 `/` `\` 和控制字符，只是标签）、`size`（必须和 hub 上的一致）、`type`（可选，MIME 提示）。每个文件必须已经在 hub 上，而且 `from_agent` 是它的当事人（自己上传的，或收到过的），否则 400 `unknown blob`。详见 [docs/FILES.md](docs/FILES.md) |
+
+| `group` | 否 | 这封信属于哪个群组（名字规则同 §0 的名字部分）。两端同在不止一个群组时必填；只有一个时 hub 自动填上再存；两端都是主人的 agent 时不填就是私有空间。见 [docs/GROUPS.md](docs/GROUPS.md#规则) |
 
 **出现其他字段一律 400。**
 
@@ -182,10 +190,10 @@ caller 端：`{"role":"caller","owner":"alice","agent":"muse","hub":"khoomei-jun
 
 朋友不需要加入你的 tailnet，也不需要公网服务器。你在 Tailscale 管理后台把 hub 这一个节点**分享**给朋友的账户；朋友的设备能连 hub，看不到你的其他机器。连接到 hub 时 `WhoIs` 返回朋友节点的名字和**朋友的登录身份**，hub 据此做 §1 的两重判定。
 
-步骤：hub 所有者 `khoomei owner alice --login alice@github --apply`，再 `khoomei agent alice/muse --node <alice 的节点名> --apply`；alice 那边 `khoomei setup --hub <hub 节点的 tailnet 地址> --owner alice --agent muse --apply`。alice 的 agent 之后用 `--to grok`（裸名，指 hub 所有者的 grok）或 `--to junyi/grok`。
+步骤：hub 所有者 `khoomei owner alice --login alice@github --apply`，再 `khoomei agent alice/muse --node <alice 的节点名> --apply`，重启 hub；alice 那边 `khoomei setup --hub <hub 节点的 tailnet 地址> --owner alice --agent muse --apply`。这时 alice 只是通讯录里的联系人：hub 所有者把她的 agent 和自己的 agent 拉进同一个群组（`khoomei group create 项目X grok alice/muse`，或在面板里）之后，alice 的 agent 才能用 `--to grok`（裸名，指 hub 所有者的 grok）或 `--to junyi/grok`。
 
 两个人都有 hub 时，互相分享节点，各自的 hub 作为对方 hub 的 caller（hub 之间转发是下一步，本版不做）。
 
 ## 8. 刻意不做
 
-请求生命周期状态、hub 之间互相转发、跨 hub 的全局身份（地址只在一个 hub 内有意义）、OAuth、任何公网暴露、对系统 tailscaled 的依赖。信封留了 `kind` 和 `data` 给上层约定；`files` 是 0.5 加的，旧 hub 会按"未知字段一律 400"拒收，所以 hub 先升级，caller 发附件前看 `/health` 的 `features` 里有没有 `blob`。
+请求生命周期状态、hub 之间互相转发、跨 hub 的全局身份（地址只在一个 hub 内有意义）、OAuth、任何公网暴露、对系统 tailscaled 的依赖。信封留了 `kind` 和 `data` 给上层约定；`files` 是 0.5 加的，`group` 是 0.6 加的，旧 hub 会按"未知字段一律 400"拒收，所以 hub 先升级；caller 发附件前看 `/health` 的 `features` 里有没有 `blob`，只在需要时才带 `group`。

@@ -23,7 +23,8 @@ const (
 	aliceLogin = "alice@github"
 )
 
-// fixture: junyi's hub with grok and muse on the hub, alice's muse and codex on her node.
+// fixture: junyi's hub with grok and muse on the hub, alice's muse and codex on her node, and a group
+// "proj" holding junyi/grok and alice/muse.
 type fixture struct {
 	t   *testing.T
 	cfg *config.Config
@@ -49,6 +50,12 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f := &fixture{t: t, cfg: cfg, box: mailbox.New(cfg.Home)}
 	f.start()
+	if err := f.h.Groups.Create("proj"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.h.ChangeGroup("proj", []string{"junyi/grok", "alice/muse"}, nil); err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 
@@ -64,6 +71,7 @@ func (f *fixture) start() {
 		f.t.Fatal(err)
 	}
 	f.p = p
+	p.Hub = f.h
 	f.h.Observer, f.h.Admin = p, p.Handler()
 	f.h.Identify = func(r *http.Request) (hub.Identity, error) { return hub.Identity{Local: true}, nil }
 	f.srv = httptest.NewServer(f.h.Handler())
@@ -76,6 +84,18 @@ func (f *fixture) send(id hub.Identity, from, to, text string) *protocol.Envelop
 	if _, err := f.h.Receive(id, env); err != nil {
 		f.t.Fatalf("send %s→%s: %v", from, to, err)
 	}
+	return env
+}
+
+// legacy stores a record the way a hub before groups accepted it, bypassing today's rules.
+func (f *fixture) legacy(from, to, text string) *protocol.Envelope {
+	f.t.Helper()
+	env := protocol.New(from, to, text)
+	rec, _, err := f.box.Store(env, "old-hub", "")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.p.Stored(rec)
 	return env
 }
 
@@ -128,36 +148,38 @@ type messagesResp struct {
 
 func TestRooms(t *testing.T) {
 	f := newFixture(t)
-	f.send(local, "junyi/muse", "junyi/grok", "self")
+	f.send(local, "junyi/muse", "junyi/grok", "private")
 	f.send(local, "junyi/grok", "alice/muse", "to alice")
 	f.send(alice, "alice/muse", "junyi/grok", "from alice")
-	f.send(alice, "alice/muse", "alice/codex", "between alice's own agents")
+	f.legacy("alice/codex", "junyi/muse", "before groups")
+	f.legacy("alice/muse", "alice/codex", "between alice's own agents")
 
 	var rooms struct {
 		Rooms []roomOut `json:"rooms"`
 	}
 	f.get("/admin/api/rooms", &rooms)
-	if len(rooms.Rooms) != 2 || rooms.Rooms[0].ID != RoomSelf || rooms.Rooms[1].ID != "peer/alice" {
-		t.Fatalf("rooms: %+v", rooms.Rooms)
+	ids := []string{}
+	for _, r := range rooms.Rooms {
+		ids = append(ids, r.ID)
 	}
-	if rooms.Rooms[0].Count != 1 || rooms.Rooms[1].Count != 2 || rooms.Rooms[1].Title != "junyi × alice" {
+	if strings.Join(ids, ",") != "private,group/proj,earlier" {
+		t.Fatalf("rooms: %v", ids)
+	}
+	if rooms.Rooms[0].Count != 1 || rooms.Rooms[1].Count != 2 || rooms.Rooms[2].Count != 1 || rooms.Rooms[1].Kind != "group" {
 		t.Fatalf("counts: %+v", rooms.Rooms)
 	}
-	for _, r := range rooms.Rooms {
-		for _, m := range r.Members {
-			if m == "alice/codex" && r.ID == RoomSelf {
-				t.Fatalf("friend agent in self room: %+v", r)
-			}
-		}
+	if got := strings.Join(rooms.Rooms[1].Members, ","); got != "alice/muse,junyi/grok" {
+		t.Fatalf("group members: %s", got)
+	}
+	if got := strings.Join(rooms.Rooms[0].Members, ","); got != "junyi/grok,junyi/muse" {
+		t.Fatalf("private members: %s", got)
 	}
 	var msgs messagesResp
-	f.get("/admin/api/messages?room=peer/alice", &msgs)
-	for _, m := range msgs.Messages {
-		if m.Envelope.Text == "between alice's own agents" {
-			t.Fatal("friend-to-friend message shown")
-		}
+	f.get("/admin/api/messages?room=group/proj", &msgs)
+	if len(msgs.Messages) != 2 || msgs.Messages[0].Envelope.Group != "proj" {
+		t.Fatalf("group messages: %+v", msgs.Messages)
 	}
-	if code := f.get("/admin/api/messages?room=hidden", nil); code != 400 {
+	if code := f.get("/admin/api/messages?room=hidden", nil); code != 404 {
 		t.Fatalf("hidden room readable: %d", code)
 	}
 }
@@ -172,27 +194,27 @@ func TestPagingAndFilters(t *testing.T) {
 		f.send(local, from, to, fmt.Sprint(i))
 	}
 	var page messagesResp
-	f.get("/admin/api/messages?room=self&limit=3", &page)
+	f.get("/admin/api/messages?room=private&limit=3", &page)
 	if len(page.Messages) != 3 || !page.More || page.Messages[0].Envelope.Text != "4" || page.Messages[2].Envelope.Text != "6" {
 		t.Fatalf("first page: %+v", page)
 	}
 	var older messagesResp
-	f.get(fmt.Sprintf("/admin/api/messages?room=self&limit=3&before=%d", page.Messages[0].Seq), &older)
+	f.get(fmt.Sprintf("/admin/api/messages?room=private&limit=3&before=%d", page.Messages[0].Seq), &older)
 	if len(older.Messages) != 3 || older.Messages[2].Envelope.Text != "3" || !older.More {
 		t.Fatalf("second page: %+v", older)
 	}
 	var last messagesResp
-	f.get(fmt.Sprintf("/admin/api/messages?room=self&limit=3&before=%d", older.Messages[0].Seq), &last)
+	f.get(fmt.Sprintf("/admin/api/messages?room=private&limit=3&before=%d", older.Messages[0].Seq), &last)
 	if len(last.Messages) != 1 || last.More || last.Messages[0].Envelope.Text != "0" {
 		t.Fatalf("last page: %+v", last)
 	}
 	var toMuse messagesResp
-	f.get("/admin/api/messages?room=self&member=junyi/grok&kinds=text", &toMuse)
+	f.get("/admin/api/messages?room=private&member=junyi/grok&kinds=text", &toMuse)
 	if len(toMuse.Messages) != 7 {
 		t.Fatalf("member filter: %d", len(toMuse.Messages))
 	}
 	var none messagesResp
-	f.get("/admin/api/messages?room=self&kinds=request", &none)
+	f.get("/admin/api/messages?room=private&kinds=request", &none)
 	if len(none.Messages) != 0 {
 		t.Fatalf("kind filter: %d", len(none.Messages))
 	}
@@ -209,12 +231,12 @@ func TestAckRebuildAndUnread(t *testing.T) {
 
 	check := func(when string) {
 		var unread messagesResp
-		f.get("/admin/api/messages?room=self&unread=1", &unread)
+		f.get("/admin/api/messages?room=private&unread=1", &unread)
 		if len(unread.Messages) != 1 || unread.Messages[0].Envelope.Text != "b" {
 			t.Fatalf("%s: unread %+v", when, unread.Messages)
 		}
 		var all messagesResp
-		f.get("/admin/api/messages?room=self", &all)
+		f.get("/admin/api/messages?room=private", &all)
 		if len(all.Messages) != 2 || !all.Messages[0].Acked || all.Messages[1].Acked {
 			t.Fatalf("%s: acked flags %+v", when, all.Messages)
 		}
@@ -257,7 +279,7 @@ func TestEvents(t *testing.T) {
 	}()
 	time.Sleep(100 * time.Millisecond)
 	f.send(local, "junyi/muse", "junyi/grok", "live")
-	f.send(alice, "alice/muse", "alice/codex", "hidden")
+	f.legacy("alice/muse", "alice/codex", "hidden")
 	select {
 	case evs := <-got:
 		if len(evs) == 0 || evs[0].Type != "message" || evs[0].Record.Envelope.Text != "live" {
@@ -340,7 +362,7 @@ func TestPruneRules(t *testing.T) {
 	f.send(local, "junyi/muse", "junyi/grok", "acked")
 	ackAll(t, f, "junyi/grok")
 	f.send(local, "junyi/grok", "junyi/muse", "pending")
-	f.send(alice, "alice/muse", "alice/codex", "hidden pending")
+	f.legacy("alice/muse", "alice/codex", "hidden pending")
 
 	// Younger than a day: nothing goes, even when asked for 1 hour.
 	if _, out := f.prune(`{"what":"acked","older_than_hours":1}`, nil); out["count"] != 0.0 {
@@ -360,7 +382,7 @@ func TestPruneRules(t *testing.T) {
 	if code, _ := f.prune(`{"what":"pending","room":"hidden"}`, nil); code != 400 {
 		t.Fatalf("hidden pending: %d", code)
 	}
-	if code, _ := f.prune(`{"what":"acked","room":"self","agent":"junyi/grok"}`, nil); code != 400 {
+	if code, _ := f.prune(`{"what":"acked","room":"private","agent":"junyi/grok"}`, nil); code != 400 {
 		t.Fatalf("room and agent: %d", code)
 	}
 
@@ -452,13 +474,13 @@ func TestPruneCSRF(t *testing.T) {
 func TestStorage(t *testing.T) {
 	f := newFixture(t)
 	f.send(local, "junyi/muse", "junyi/grok", "a")
-	f.send(alice, "alice/muse", "alice/codex", "hidden")
+	f.legacy("alice/muse", "alice/codex", "hidden")
 	var st struct {
 		Rooms     []roomUsage    `json:"rooms"`
 		Retention map[string]any `json:"retention"`
 	}
 	f.get("/admin/api/storage", &st)
-	if len(st.Rooms) != 2 || st.Rooms[0].ID != RoomSelf || st.Rooms[1].ID != RoomHidden || st.Rooms[0].Pending.Count != 1 || st.Rooms[1].Pending.Bytes == 0 {
+	if len(st.Rooms) != 2 || st.Rooms[0].ID != RoomPrivate || st.Rooms[1].ID != RoomHidden || st.Rooms[0].Pending.Count != 1 || st.Rooms[1].Pending.Bytes == 0 {
 		t.Fatalf("storage: %+v", st.Rooms)
 	}
 	if st.Retention["acked_days"] != float64(config.DefaultAckedDays) {
@@ -552,7 +574,10 @@ func TestPanelBlob(t *testing.T) {
 	img, script := f.upload("junyi/muse", png), f.upload("junyi/muse", svg)
 	f.sendFiles(local, "junyi/muse", "junyi/grok", img, script)
 	secret := f.upload("alice/muse", []byte("between alice's agents"))
-	f.sendFiles(alice, "alice/muse", "alice/codex", secret)
+	env := protocol.New("alice/muse", "alice/codex", "")
+	env.Files = []protocol.FileRef{secret}
+	rec, _, _ := f.box.Store(env, "old-hub", "")
+	f.p.Stored(rec)
 
 	get := func(path string) *http.Response {
 		resp, err := http.Get(f.srv.URL + path)
@@ -603,7 +628,7 @@ func TestFileRetentionIsShorterThanText(t *testing.T) {
 		t.Fatal("file of a pending message removed")
 	}
 	var msgs messagesResp
-	f.get("/admin/api/messages?room=self", &msgs)
+	f.get("/admin/api/messages?room=private", &msgs)
 	if len(msgs.Messages) != 2 {
 		t.Fatalf("messages: %d", len(msgs.Messages))
 	}

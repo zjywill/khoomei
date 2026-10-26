@@ -2,13 +2,14 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useIntersectionObserver, useScroll } from '@vueuse/core'
 import MessageItem from './MessageItem.vue'
-import {
-  connection, following, loadOlder, lookup, loadTimeline, navigate, owner, recKey, rooms, route, selected, timeline, unseen,
-} from '../state'
-import { shortName } from '../format'
+import GroupModal from './GroupModal.vue'
+import { connection, following, isOwner, loadOlder, loadTimeline, lookup, me, navigate, recKey, rooms, route, selected, timeline, unseen } from '../state'
+import { roomTitle, shortName } from '../format'
 import type { Rec } from '../api'
 
 const room = computed(() => rooms.value.find((r) => r.id === route.room))
+const membersOpen = ref(false)
+const canManage = computed(() => isOwner.value && room.value?.kind === 'group' && !room.value.deleted)
 
 const kindItems = [
   { label: 'text', value: 'text' },
@@ -96,15 +97,25 @@ const statusText = computed(() =>
 
 <template>
   <UDashboardPanel id="timeline" :ui="{ root: 'min-h-0' }">
-    <UDashboardNavbar :title="room?.title ?? '群'" icon="i-lucide-messages-square">
+    <UDashboardNavbar :title="room ? roomTitle(room) : '群组'" :icon="room?.kind === 'private' ? 'i-lucide-lock' : 'i-lucide-messages-square'">
       <template #trailing>
-        <UBadge v-if="room" :label="`${room.members.length} 个成员`" color="neutral" variant="subtle" size="sm" class="hidden sm:inline-flex" />
+        <UButton
+          v-if="canManage"
+          :label="`${room!.members.length} 个成员`"
+          icon="i-lucide-users"
+          color="neutral"
+          variant="subtle"
+          size="xs"
+          aria-label="管理群组成员"
+          @click="membersOpen = true"
+        />
+        <UBadge v-else-if="room" :label="`${room.members.length} 个成员`" color="neutral" variant="subtle" size="sm" class="hidden sm:inline-flex" />
       </template>
       <template #right>
         <UBadge v-if="statusText" :label="statusText" color="warning" variant="subtle" icon="i-lucide-wifi-off" role="status" />
         <UButton
           v-if="route.member"
-          :label="shortName(route.member, owner)"
+          :label="shortName(route.member, me)"
           trailing-icon="i-lucide-x"
           color="primary"
           variant="soft"
@@ -184,5 +195,6 @@ const statusText = computed(() =>
         @click="toBottom(true)"
       />
     </div>
+    <GroupModal v-if="canManage" v-model:open="membersOpen" :group="room!.name" />
   </UDashboardPanel>
 </template>

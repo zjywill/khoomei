@@ -47,6 +47,9 @@ type Envelope struct {
 	Wake      string          `json:"wake,omitempty"`
 	Data      json.RawMessage `json:"data,omitempty"`
 	Files     []FileRef       `json:"files,omitempty"`
+	// Group is the hub group the message belongs to (docs/GROUPS.md). A sender may leave it out:
+	// the hub fills it in when the two agents share exactly one group.
+	Group string `json:"group,omitempty"`
 }
 
 // FileRef points at a blob already on the hub (docs/FILES.md). Name is a label for people; a
@@ -110,6 +113,8 @@ func (e *Envelope) Validate() error {
 		return errors.New("bad kind")
 	case e.ReplyTo != "" && !idRe.MatchString(e.ReplyTo):
 		return errors.New("bad reply_to")
+	case e.Group != "" && !ValidAgent(e.Group):
+		return errors.New("bad group")
 	case len(e.Files) > MaxFiles:
 		return fmt.Errorf("at most %d files", MaxFiles)
 	case strings.TrimSpace(e.Text) == "" && (len(e.Data) == 0 || string(e.Data) == "null") && len(e.Files) == 0:

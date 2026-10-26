@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -314,11 +315,12 @@ func (a *auth) check(src, hash, pw string) bool {
 
 // --------------------------------------------------------------------------- HTTP
 
-// gate lets /admin/api through only with a session once a password is set. The page and its assets
-// are always served; the auth endpoints handle themselves.
+// gate works out who is looking (viewerOf) before any /admin/api handler runs. A registered friend
+// gets the guest view without a password; anyone else who is not the owner needs to log in once a
+// password is set. The page and its assets are always served; the auth endpoints handle themselves.
 func (p *Panel) gate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/admin/api/") || strings.HasPrefix(r.URL.Path, "/admin/api/auth") {
+		if !strings.HasPrefix(r.URL.Path, "/admin/api/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -327,22 +329,24 @@ func (p *Panel) gate(next http.Handler) http.Handler {
 			writeJSON(w, 500, map[string]any{"ok": false, "error": "cannot read the panel password: " + err.Error()})
 			return
 		}
-		if hash != "" && !p.auth.valid(r, hash) {
+		v := p.viewerOf(r, hash)
+		if hash != "" && !v.owner && v.friend == "" && !strings.HasPrefix(r.URL.Path, "/admin/api/auth") {
 			writeJSON(w, 401, map[string]any{"ok": false, "error": "login required", "code": "login_required"})
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), viewerKey{}, v)))
 	})
 }
 
-// isOwner says whether the request comes from the hub owner: loopback, or whatever the hub decides.
+// isOwner says whether the request comes from the hub owner in person (hub.Hub.IsOwner); without a
+// hub only loopback counts.
 func (p *Panel) isOwner(r *http.Request) bool {
 	id, ok := hub.IdentityFrom(r.Context())
 	if !ok {
 		return false
 	}
-	if p.IsOwner != nil {
-		return p.IsOwner(id)
+	if p.Hub != nil {
+		return p.Hub.IsOwner(id)
 	}
 	return id.Local
 }
@@ -354,8 +358,9 @@ func (p *Panel) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	set := hash != ""
+	v := viewerFrom(r.Context())
 	writeJSON(w, 200, map[string]any{"ok": true, "password_set": set, "logged_in": set && p.auth.valid(r, hash),
-		"can_set": !set && p.isOwner(r), "min_length": MinPassword})
+		"can_set": !set && p.isOwner(r), "min_length": MinPassword, "viewer": viewerJSON(v)})
 }
 
 func (p *Panel) handleLogin(w http.ResponseWriter, r *http.Request) {

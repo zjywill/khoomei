@@ -22,7 +22,8 @@ func shaOf(b []byte) string {
 }
 
 func TestBlobUploadAndAccess(t *testing.T) {
-	_, srv := newTestHub(t)
+	h, srv := newTestHub(t)
+	group(t, h, "proj", "junyi/grok", "alice/muse")
 	ctx := context.Background()
 	muse := asPeer(srv, museNode, "junyi@github")
 	owner := client.New(srv.URL, nil) // loopback: may act as junyi/grok

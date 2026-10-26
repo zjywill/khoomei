@@ -7,11 +7,12 @@ import (
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
-// Rooms are views computed from the owners at both ends of a message (docs/PANEL.md#群怎么分).
+// Rooms are where a message shows up (docs/PANEL.md#群怎么分).
 const (
-	RoomSelf   = "self"   // both ends belong to the hub owner
-	RoomHidden = "hidden" // neither end does: friends talking through this hub; counted, never shown
-	peerPrefix = "peer/"  // one end is the owner's, the other belongs to the handle after the slash
+	RoomPrivate = "private" // two of the hub owner's agents, no group named: only the owner sees it
+	RoomEarlier = "earlier" // a friend at one end, sent before groups existed: only the owner sees it
+	RoomHidden  = "hidden"  // friends among themselves, before groups: counted, never shown
+	groupPrefix = "group/"  // a group, by the name after the slash: the owner and the group's people see it
 )
 
 // entry is what the index keeps per stored record; the text stays on disk.
@@ -31,18 +32,20 @@ func (e *entry) received() time.Time { return time.Unix(0, e.Seq) }
 
 func entryKey(to, id string) string { return to + "\x00" + id }
 
-// roomOf maps a message to its room. In single-owner mode every address is bare, so all is "self".
-func (p *Panel) roomOf(from, to string) string {
+// roomOf maps a message to its room: its group when it has one, otherwise by the owners at both
+// ends. In single-owner mode every address is bare, so everything without a group is private.
+func (p *Panel) roomOf(env protocol.Envelope) string {
+	if env.Group != "" {
+		return groupPrefix + env.Group
+	}
 	owner := p.cfg.Owner
-	fo, _, _ := protocol.SplitAddress(from)
-	tob, _, _ := protocol.SplitAddress(to)
+	fo, _, _ := protocol.SplitAddress(env.FromAgent)
+	tob, _, _ := protocol.SplitAddress(env.ToAgent)
 	switch {
 	case fo == owner && tob == owner:
-		return RoomSelf
-	case fo == owner:
-		return peerPrefix + tob
-	case tob == owner:
-		return peerPrefix + fo
+		return RoomPrivate
+	case fo == owner || tob == owner:
+		return RoomEarlier
 	}
 	return RoomHidden
 }

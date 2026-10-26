@@ -2,7 +2,7 @@
 import { computed, h, onMounted, ref, resolveComponent } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
 import { api, type Storage } from '../api'
-import { bytes, fullTime, ago } from '../format'
+import { bytes, fullTime, ago, roomTitle as titleOf } from '../format'
 import { errorText, rooms } from '../state'
 import PruneModal from './PruneModal.vue'
 
@@ -26,8 +26,11 @@ async function load() {
 onMounted(load)
 
 function roomTitle(id: string) {
-  if (id === 'hidden') return '看不到的（朋友之间）'
-  return rooms.value.find((r) => r.id === id)?.title ?? id
+  if (id === 'hidden') return '看不到的（朋友之间，有群组以前）'
+  const r = rooms.value.find((r) => r.id === id)
+  if (r) return titleOf(r)
+  if (id.startsWith('group/')) return titleOf({ kind: 'group', name: id.slice(6), deleted: true })
+  return titleOf({ kind: id })
 }
 
 type Row = Storage['rooms'][number]

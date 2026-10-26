@@ -43,6 +43,15 @@ type Response struct {
 	Size      int64             `json:"size,omitempty"`
 	Count     int               `json:"count,omitempty"`
 	Bytes     int64             `json:"bytes,omitempty"`
+	Contacts  []Contact         `json:"contacts,omitempty"`
+	Groups    json.RawMessage   `json:"groups,omitempty"` // /contacts: names; /admin/api/groups: objects
+}
+
+// Contact is one address an agent may message (GET /contacts).
+type Contact struct {
+	Address string   `json:"address"`
+	Private bool     `json:"private,omitempty"`
+	Groups  []string `json:"groups,omitempty"`
 }
 
 // New returns a client. Connections are not reused: the path to a hub often runs through a DERP
@@ -148,6 +157,32 @@ func (c *Client) Ack(ctx context.Context, agent string, ids []string) (*Response
 // Prune asks the hub's panel to remove records (docs/PANEL.md#清理); only the hub owner may.
 func (c *Client) Prune(ctx context.Context, req any) (*Response, error) {
 	return c.callWith(ctx, http.MethodPost, "/admin/api/prune", req, 60*time.Second, map[string]string{"X-Khoomei-Panel": "1"})
+}
+
+// Contacts lists whom agent may message and the groups it is in (docs/GROUPS.md).
+func (c *Client) Contacts(ctx context.Context, agent string) (*Response, error) {
+	return c.call(ctx, http.MethodGet, "/contacts?agent="+url.QueryEscape(agent), nil, 30*time.Second)
+}
+
+// Group calls are the hub owner's, made from the hub over loopback (docs/GROUPS.md#命令).
+func (c *Client) Groups(ctx context.Context) (*Response, error) {
+	return c.call(ctx, http.MethodGet, "/admin/api/groups", nil, 30*time.Second)
+}
+
+func (c *Client) GroupCreate(ctx context.Context, name string, members []string) (*Response, error) {
+	return c.panelPost(ctx, "/admin/api/groups", map[string]any{"name": name, "members": members})
+}
+
+func (c *Client) GroupDelete(ctx context.Context, name string) (*Response, error) {
+	return c.panelPost(ctx, "/admin/api/groups/delete", map[string]any{"name": name})
+}
+
+func (c *Client) GroupMembers(ctx context.Context, name string, add, remove []string) (*Response, error) {
+	return c.panelPost(ctx, "/admin/api/groups/members", map[string]any{"name": name, "add": add, "remove": remove})
+}
+
+func (c *Client) panelPost(ctx context.Context, path string, body any) (*Response, error) {
+	return c.callWith(ctx, http.MethodPost, path, body, 30*time.Second, map[string]string{"X-Khoomei-Panel": "1"})
 }
 
 // HasFeature reports whether a /health response lists feature f; hubs before 0.5 list none.

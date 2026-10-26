@@ -50,14 +50,27 @@ func (f *fixture) as(id hub.Identity) {
 	f.h.Identify = func(*http.Request) (hub.Identity, error) { return id, nil }
 }
 
+const ownerLogin = "junyi@github"
+
+// laptop is the owner's browser on another tailnet machine: the owner by login while no password is
+// set, a stranger to the panel once one is.
+var laptop = hub.Identity{Node: "junyi-mbp.tail1234.ts.net", Login: ownerLogin}
+
+// fromLaptop makes f's requests come from laptop, with the hub knowing junyi's login.
+func (f *fixture) fromLaptop() *fixture {
+	f.h.SelfLogin = ownerLogin
+	f.as(laptop)
+	return f
+}
+
 func TestPanelOpenWithoutPassword(t *testing.T) {
-	f := newFixture(t)
+	f := newFixture(t).fromLaptop()
 	if code, _, _ := f.authReq("GET", "/admin/api/rooms", "", "", nil); code != 200 {
 		t.Fatalf("rooms without a password: %d", code)
 	}
 	_, st, _ := f.authReq("GET", "/admin/api/auth", "", "", nil)
 	if st["password_set"] != false || st["can_set"] != true {
-		t.Fatalf("loopback status: %v", st)
+		t.Fatalf("owner's laptop status: %v", st)
 	}
 
 	// A friend sees the reminder but may not set the first password.
@@ -75,7 +88,7 @@ func TestPanelOpenWithoutPassword(t *testing.T) {
 }
 
 func TestPanelPasswordFlow(t *testing.T) {
-	f := newFixture(t)
+	f := newFixture(t).fromLaptop()
 
 	if code, body, _ := f.authReq("POST", "/admin/api/auth/password", `{"new":"short"}`, "", nil); code != 400 || body["code"] != "weak_password" {
 		t.Fatalf("short password: %d %v", code, body)
@@ -152,9 +165,23 @@ func TestPanelPasswordFlow(t *testing.T) {
 	}
 }
 
+// Loopback is the hub owner: the CLI's prune and group commands work with a password set.
+func TestPanelLoopbackSkipsPassword(t *testing.T) {
+	f := newFixture(t)
+	if err := SetPassword(f.cfg.Home, "correct horse"); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := f.authReq("GET", "/admin/api/storage", "", "", nil); code != 200 {
+		t.Fatalf("loopback storage: %d", code)
+	}
+	if code, body, _ := f.authReq("POST", "/admin/api/prune", `{"what":"acked","dry_run":true}`, "", nil); code != 200 {
+		t.Fatalf("loopback prune: %d %v", code, body)
+	}
+}
+
 // The CLI writes the file under a running hub: sessions end at once, and --clear opens the panel.
 func TestPanelPasswordFromCLI(t *testing.T) {
-	f := newFixture(t)
+	f := newFixture(t).fromLaptop()
 	if err := SetPassword(f.cfg.Home, "correct horse"); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +207,7 @@ func TestPanelPasswordFromCLI(t *testing.T) {
 }
 
 func TestPanelSessionExpiry(t *testing.T) {
-	f := newFixture(t)
+	f := newFixture(t).fromLaptop()
 	now := time.Now()
 	f.p.now = func() time.Time { return now }
 	if err := SetPassword(f.cfg.Home, "correct horse"); err != nil {
@@ -201,7 +228,7 @@ func TestPanelSessionExpiry(t *testing.T) {
 }
 
 func TestPanelLoginLockout(t *testing.T) {
-	f := newFixture(t)
+	f := newFixture(t).fromLaptop()
 	now := time.Now()
 	f.p.now = func() time.Time { return now }
 	if err := SetPassword(f.cfg.Home, "correct horse"); err != nil {
@@ -220,7 +247,7 @@ func TestPanelLoginLockout(t *testing.T) {
 	if code, _, _ := f.authReq("POST", "/admin/api/auth/login", `{"password":"correct horse"}`, "", nil); code != 200 {
 		t.Fatalf("other node: %d", code)
 	}
-	f.as(hub.Identity{Local: true})
+	f.as(laptop)
 	now = now.Add(lockMin + time.Second)
 	if code, _, _ := f.authReq("POST", "/admin/api/auth/login", `{"password":"correct horse"}`, "", nil); code != 200 {
 		t.Fatalf("after the lockout: %d", code)
@@ -228,7 +255,7 @@ func TestPanelLoginLockout(t *testing.T) {
 }
 
 func TestPanelAuthWritesNeedPanelHeaders(t *testing.T) {
-	f := newFixture(t)
+	f := newFixture(t).fromLaptop()
 	if err := SetPassword(f.cfg.Home, "correct horse"); err != nil {
 		t.Fatal(err)
 	}

@@ -69,3 +69,10 @@ export function avatarClass(addr: string): string {
 }
 
 export const kindTone: Record<string, Tone> = { request: 'info', reply: 'success', notice: 'warning' }
+
+/** How a room is named in the panel. */
+export function roomTitle(r: { kind: string; name?: string; deleted?: boolean }): string {
+  if (r.kind === 'private') return '私有空间'
+  if (r.kind === 'earlier') return '以前的往来'
+  return r.deleted ? `${r.name}（已删除）` : (r.name ?? '')
+}

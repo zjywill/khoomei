@@ -30,6 +30,11 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/api/storage", p.handleStorage)
 	mux.HandleFunc("POST /admin/api/prune", p.handlePrune)
 	mux.HandleFunc("GET /admin/api/blob/{sha}", p.handleBlob)
+	mux.HandleFunc("GET /admin/api/contacts", p.handleContacts)
+	mux.HandleFunc("GET /admin/api/groups", p.handleGroups)
+	mux.HandleFunc("POST /admin/api/groups", p.handleGroupCreate)
+	mux.HandleFunc("POST /admin/api/groups/delete", p.handleGroupDelete)
+	mux.HandleFunc("POST /admin/api/groups/members", p.handleGroupMembers)
 	mux.HandleFunc("/admin/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"ok": false, "error": "no such api"})
 	})
@@ -38,81 +43,11 @@ func (p *Panel) Handler() http.Handler {
 	return p.gate(mux)
 }
 
-type roomOut struct {
-	ID      string   `json:"id"`
-	Title   string   `json:"title"`
-	Peer    string   `json:"peer,omitempty"` // the friend's handle in a peer room
-	Members []string `json:"members"`
-	Count   int      `json:"count"`
-	Pending int      `json:"pending"`
-	LastSeq int64    `json:"last_seq"`
-}
-
-func (p *Panel) handleRooms(w http.ResponseWriter, r *http.Request) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	ids := map[string]bool{RoomSelf: true}
-	for h := range p.cfg.Owners {
-		ids[peerPrefix+h] = true
-	}
-	for id := range p.rooms {
-		if id != RoomHidden {
-			ids[id] = true
-		}
-	}
-	out := []roomOut{}
-	for _, id := range sortedKeys(ids) {
-		out = append(out, p.room(id))
-	}
-	// Self first, then friends by name.
-	slices.SortStableFunc(out, func(a, b roomOut) int {
-		if (a.ID == RoomSelf) != (b.ID == RoomSelf) {
-			if a.ID == RoomSelf {
-				return -1
-			}
-			return 1
-		}
-		return 0
-	})
-	writeJSON(w, 200, map[string]any{"ok": true, "owner": p.cfg.Owner, "rooms": out, "events_next": p.nextSeq})
-}
-
-// room summarizes one room; the caller holds p.mu.
-func (p *Panel) room(id string) roomOut {
-	owner := p.cfg.Owner
-	ro := roomOut{ID: id, Title: owner, Members: []string{}}
-	if ro.Title == "" {
-		ro.Title = "hub"
-	}
-	peer, isPeer := strings.CutPrefix(id, peerPrefix)
-	if isPeer {
-		ro.Peer = peer
-		ro.Title += " × " + peer
-	}
-	members := map[string]bool{}
-	for addr := range p.cfg.Agents {
-		o, _, _ := protocol.SplitAddress(addr)
-		if (!isPeer && o == owner) || (isPeer && o == peer) {
-			members[addr] = true
-		}
-	}
-	for _, e := range p.rooms[id] {
-		members[e.From], members[e.To] = true, true
-		ro.Count++
-		if !e.Acked {
-			ro.Pending++
-		}
-		ro.LastSeq = e.Seq
-	}
-	ro.Members = sortedKeys(members)
-	return ro
-}
-
 func (p *Panel) handleMessages(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	room := q.Get("room")
-	if room == "" || room == RoomHidden {
-		writeJSON(w, 400, map[string]any{"ok": false, "error": "bad room"})
+	if room == "" || !p.sees(viewerFrom(r.Context()))(room) {
+		writeJSON(w, 404, map[string]any{"ok": false, "error": "no such room"})
 		return
 	}
 	member := q.Get("member")
@@ -186,10 +121,11 @@ func (p *Panel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"ok": false, "error": "bad id"})
 		return
 	}
+	see := p.sees(viewerFrom(r.Context()))
 	p.mu.Lock()
 	var found *entry
 	for _, e := range p.byKey {
-		if e.ID == id && e.Room != RoomHidden && (found == nil || e.Seq < found.Seq) {
+		if e.ID == id && see(e.Room) && (found == nil || e.Seq < found.Seq) {
 			found = e
 		}
 	}
@@ -218,17 +154,11 @@ type presenceOut struct {
 }
 
 func (p *Panel) handlePresence(w http.ResponseWriter, r *http.Request) {
+	v := viewerFrom(r.Context())
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	out := map[string]presenceOut{}
-	agents := map[string]bool{}
-	for a := range p.cfg.Agents {
-		agents[a] = true
-	}
-	for a := range p.presence {
-		agents[a] = true
-	}
-	for a := range agents {
+	for a := range p.visibleAgents(v) {
 		pr := p.presence[a]
 		po := presenceOut{State: p.state(a, pr)}
 		if pr != nil {
@@ -237,7 +167,7 @@ func (p *Panel) handlePresence(w http.ResponseWriter, r *http.Request) {
 				po.LastSeen = pr.last.UTC().Format(time.RFC3339)
 			}
 		}
-		if spec := p.cfg.Agents[a]; spec != nil && spec.Wake != nil {
+		if spec := p.cfg.Agents[a]; v.owner && spec != nil && spec.Wake != nil {
 			po.Wake = spec.Wake.Type
 		}
 		out[a] = po
@@ -253,6 +183,22 @@ func (p *Panel) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	timeout = min(max(timeout, 0), 60)
 	events, next, reset := p.Since(r.Context(), after, time.Duration(timeout*float64(time.Second)))
+	if v := viewerFrom(r.Context()); !v.owner {
+		see := p.sees(v)
+		p.mu.Lock()
+		agents := p.visibleAgents(v)
+		p.mu.Unlock()
+		kept := events[:0]
+		for _, ev := range events {
+			switch {
+			case ev.Room != "" && !see(ev.Room):
+			case ev.Type == "presence" && !agents[ev.Agent]:
+			default:
+				kept = append(kept, ev)
+			}
+		}
+		events = kept
+	}
 	writeJSON(w, 200, map[string]any{"ok": true, "next": next, "reset": reset, "events": events})
 }
 
@@ -268,8 +214,8 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 // SVG is not among them: it can carry script.
 var inlineImages = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
 
-// handleBlob serves an attachment of a message the panel shows; files only friends exchanged stay
-// hidden. ?inline=1 previews it when it is one of inlineImages, otherwise it is always a download.
+// handleBlob serves an attachment of a message this viewer can see; nothing else, not even whether
+// the file exists. ?inline=1 previews it when it is one of inlineImages, otherwise it is always a download.
 func (p *Panel) handleBlob(w http.ResponseWriter, r *http.Request) {
 	sha := r.PathValue("sha")
 	notFound := func() { writeJSON(w, 404, map[string]any{"ok": false, "error": "no such file"}) }
@@ -277,10 +223,11 @@ func (p *Panel) handleBlob(w http.ResponseWriter, r *http.Request) {
 		notFound()
 		return
 	}
+	see := p.sees(viewerFrom(r.Context()))
 	p.mu.Lock()
 	visible := false
 	for _, e := range p.byKey {
-		if e.Room != RoomHidden && slices.Contains(e.Files, sha) {
+		if see(e.Room) && slices.Contains(e.Files, sha) {
 			visible = true
 			break
 		}

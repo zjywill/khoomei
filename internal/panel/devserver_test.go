@@ -26,6 +26,8 @@ import (
 //	KHOOMEI_PANEL_DEV=127.0.0.1:7767 go test ./internal/panel -run TestDevServer -timeout 0
 //
 // then open http://127.0.0.1:7767/admin/ (the embedded build) or run `npm run dev` in web/.
+// KHOOMEI_PANEL_AS=alice shows the panel as alice sees it (a friend, groups only); bob is a friend
+// who is registered but in no group yet.
 func TestDevServer(t *testing.T) {
 	addr := os.Getenv("KHOOMEI_PANEL_DEV")
 	if addr == "" {
@@ -33,7 +35,7 @@ func TestDevServer(t *testing.T) {
 	}
 	cfg, _ := config.Load(t.TempDir())
 	cfg.Role, cfg.Owner = config.RoleHub, "junyi"
-	cfg.Owners = map[string]*config.OwnerSpec{"alice": {Login: aliceLogin}}
+	cfg.Owners = map[string]*config.OwnerSpec{"alice": {Login: aliceLogin}, "bob": {Login: "bob@github"}}
 	cfg.Agents = map[string]*config.AgentSpec{
 		"junyi/grok":   {Node: "khoomei-junyi-grok", Wake: &config.WakeAdapter{Type: "exec", Argv: []string{"true"}}},
 		"junyi/muse":   {Node: "muse-vm"},
@@ -41,6 +43,7 @@ func TestDevServer(t *testing.T) {
 		"junyi/codex":  {Local: true, Wake: &config.WakeAdapter{Type: "exec", Argv: []string{"false"}}},
 		"alice/muse":   {Node: aliceNode},
 		"alice/codex":  {Node: aliceNode},
+		"bob/claude":   {Node: "bob-laptop"},
 	}
 	box := mailbox.New(cfg.Home)
 	h := hub.New(cfg, box, nil, t.Logf)
@@ -48,8 +51,18 @@ func TestDevServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.Hub = h
 	h.Observer, h.Admin = p, p.Handler()
 	h.Identify = func(r *http.Request) (hub.Identity, error) { return hub.Identity{Local: true}, nil }
+	if os.Getenv("KHOOMEI_PANEL_AS") == "alice" {
+		h.Identify = func(r *http.Request) (hub.Identity, error) { return hub.Identity{Node: aliceNode, Login: aliceLogin}, nil }
+	}
+	for name, members := range map[string][]string{"项目X": {"junyi/grok", "junyi/claude", "alice/muse"}, "家人": {"junyi/muse", "alice/codex"}} {
+		_ = h.Groups.Create(name)
+		if _, err := h.ChangeGroup(name, members, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	send := func(from, to, kind, text, reply string, wake string) *protocol.Envelope {
 		env := protocol.New(from, to, text)
@@ -92,7 +105,8 @@ func TestDevServer(t *testing.T) {
 	x := send("alice/muse", "junyi/grok", "request", "你们在讨论什么？哪些和我的项目有关？", "", "now")
 	send("junyi/grok", "alice/muse", "reply", "在说 khoomei 的面板，和你的项目没关系。", x.ID, "")
 	ack("junyi/grok", x)
-	send("alice/muse", "alice/codex", "text", "这条是 alice 自己的，不该出现在面板里", "", "")
+	send("junyi/claude", "alice/muse", "notice", "设计稿我放到群里了，有空看看。", "", "")
+	send("alice/codex", "junyi/muse", "text", "周末一起吃饭？", "", "")
 	send("junyi/claude", "junyi/grok", "text", "被清理过的回复引用", "Zz0000000000pruned", "")
 
 	// Attachments: a chart Grok drew and the report it belongs to.

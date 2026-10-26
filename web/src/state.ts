@@ -2,28 +2,28 @@
 // long-poll loop that keeps them live (docs/PANEL.md#数据流).
 import { computed, reactive, ref, watch } from 'vue'
 import { useDocumentVisibility } from '@vueuse/core'
-import { api, ApiError, setOnLoginRequired, type AuthStatus, type PanelEvent, type Presence, type Rec, type Room } from './api'
+import { api, ApiError, setOnLoginRequired, type AuthStatus, type PanelEvent, type Presence, type Rec, type Room, type Viewer } from './api'
 
 // --------------------------------------------------------------------------- route
 
 export interface Route {
-  view: 'chat' | 'storage'
+  view: 'chat' | 'storage' | 'contacts'
   room: string
   member: string
   kinds: string[]
   unread: boolean
 }
 
-export const route = reactive<Route>({ view: 'chat', room: 'self', member: '', kinds: [], unread: false })
+export const route = reactive<Route>({ view: 'chat', room: '', member: '', kinds: [], unread: false })
 
 function parseHash(): Route {
   const [path = '', qs = ''] = location.hash.replace(/^#\/?/, '').split('?')
   const q = new URLSearchParams(qs)
-  if (path === 'storage') return { view: 'storage', room: route.room, member: '', kinds: [], unread: false }
-  const room = path.startsWith('room/') ? decodeURIComponent(path.slice(5)) : 'self'
+  if (path === 'storage' || path === 'contacts') return { view: path, room: route.room, member: '', kinds: [], unread: false }
+  const room = path.startsWith('room/') ? decodeURIComponent(path.slice(5)) : ''
   return {
     view: 'chat',
-    room: room || 'self',
+    room,
     member: q.get('member') ?? '',
     kinds: (q.get('kinds') ?? '').split(',').filter(Boolean),
     unread: q.get('unread') === '1',
@@ -31,7 +31,7 @@ function parseHash(): Route {
 }
 
 function formatHash(r: Route): string {
-  if (r.view === 'storage') return '#/storage'
+  if (r.view === 'storage' || r.view === 'contacts') return `#/${r.view}`
   const q = new URLSearchParams()
   if (r.member) q.set('member', r.member)
   if (r.kinds.length) q.set('kinds', r.kinds.join(','))
@@ -55,14 +55,23 @@ function applyHash() {
 // --------------------------------------------------------------------------- data
 
 export const owner = ref('')
+export const viewer = ref<Viewer>({ role: 'owner' })
+export const isOwner = computed(() => viewer.value.role === 'owner')
+/** Whose names are shown without their handle: the owner's, or in a guest view the guest's own. */
+export const me = computed(() => (isOwner.value ? owner.value : (viewer.value.handle ?? '')))
 export const rooms = ref<Room[]>([])
+/** Bumped whenever groups change, so views that list them reload. */
+export const groupsVersion = ref(0)
 export const presence = ref<Record<string, Presence>>({})
 export const connection = ref<'connecting' | 'live' | 'retrying'>('connecting')
 export const fatal = ref('') // 403 and friends: nothing to retry
 
 /** The panel password (docs/PANEL.md#密码). null until the first answer. */
 export const authStatus = ref<AuthStatus | null>(null)
-export const needLogin = computed(() => !!authStatus.value?.password_set && !authStatus.value.logged_in)
+// A stranger needs the password; the owner on loopback and registered friends do not.
+export const needLogin = computed(
+  () => !!authStatus.value?.password_set && authStatus.value.viewer.role === 'guest' && !authStatus.value.viewer.handle,
+)
 export const passwordOpen = ref(false)
 
 export const timeline = reactive({
@@ -100,7 +109,7 @@ function filterParams() {
 let pageToken = 0
 
 export async function loadTimeline() {
-  if (route.view !== 'chat' || needLogin.value) return
+  if (route.view !== 'chat' || needLogin.value || !route.room) return
   const token = ++pageToken
   timeline.loading = true
   timeline.error = ''
@@ -137,7 +146,13 @@ export async function loadOlder() {
 export async function loadRooms() {
   const res = await api.rooms()
   owner.value = res.owner
+  viewer.value = res.viewer
   rooms.value = res.rooms
+  // A room that is gone, or one this viewer cannot see, falls back to the first one.
+  if (route.view === 'chat' && !res.rooms.some((r) => r.id === route.room)) {
+    const first = res.rooms[0]?.id ?? ''
+    if (first !== route.room) navigate({ room: first })
+  }
   return res
 }
 
@@ -170,6 +185,7 @@ export function errorText(e: unknown): string {
     if (e.code === 'weak_password') return `密码至少 ${authStatus.value?.min_length ?? 8} 个字符`
     if (e.code === 'not_owner') return '只有 hub 的主人能设第一个密码：在 hub 上运行 khoomei panel-password'
     if (e.code === 'login_required') return '需要重新登录'
+    if (e.code === 'owner_only') return '只有 hub 的主人能这么做'
     if (e.status === 403) return `没有权限：${e.message}`
     return e.message
   }
@@ -224,6 +240,12 @@ function apply(ev: PanelEvent) {
     case 'presence': {
       const p = presence.value[ev.agent!]
       if (p) p.state = ev.state!
+      void loadPresence()
+      break
+    }
+    case 'groups': {
+      groupsVersion.value++
+      refreshRooms()
       void loadPresence()
       break
     }
@@ -356,8 +378,10 @@ async function boot() {
   }
 }
 
+/** Log in as the owner, from the login page or from a guest view: everything reloads as the owner. */
 export async function login(password: string) {
   await api.login(password)
+  endSession()
   await boot()
 }
 

@@ -2,7 +2,7 @@
 import { computed, ref, watchEffect } from 'vue'
 import { blobURL, canPreview, type Rec } from '../api'
 import { avatarClass, bytes, fullTime, initials, kindTone, shortName, shortTime } from '../format'
-import { lookup, owner } from '../state'
+import { lookup, me } from '../state'
 
 const props = defineProps<{ rec: Rec; grouped: boolean; selected: boolean }>()
 const emit = defineEmits<{ select: []; jump: [id: string] }>()
@@ -31,9 +31,9 @@ async function openQuote() {
 }
 
 const wakeLine = computed(() => {
-  if (props.rec.wake === 'failed') return { text: `唤醒 ${shortName(env.value.to_agent, owner.value)} 失败`, detail: props.rec.wakeDetail, tone: 'text-error' }
+  if (props.rec.wake === 'failed') return { text: `唤醒 ${shortName(env.value.to_agent, me.value)} 失败`, detail: props.rec.wakeDetail, tone: 'text-error' }
   if (props.rec.wake === 'downgraded')
-    return { text: `${shortName(env.value.to_agent, owner.value)} 本小时的唤醒次数用完了，这条只排队不唤醒`, tone: 'text-muted' }
+    return { text: `${shortName(env.value.to_agent, me.value)} 本小时的唤醒次数用完了，这条只排队不唤醒`, tone: 'text-muted' }
   return null
 })
 </script>
@@ -53,11 +53,11 @@ const wakeLine = computed(() => {
 
       <div class="min-w-0 flex-1">
         <header v-if="!grouped" class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
-          <span class="font-semibold text-highlighted">{{ shortName(env.from_agent, owner) }}</span>
+          <span class="font-semibold text-highlighted">{{ shortName(env.from_agent, me) }}</span>
           <span class="inline-flex items-center gap-1 text-muted">
             <UIcon name="i-lucide-arrow-right" class="size-3 shrink-0" aria-hidden="true" />
             <span class="sr-only">发给</span>
-            <span class="text-primary">@{{ shortName(env.to_agent, owner) }}</span>
+            <span class="text-primary">@{{ shortName(env.to_agent, me) }}</span>
           </span>
           <UBadge v-if="kind !== 'text'" :label="kind" :color="kindTone[kind] ?? 'neutral'" variant="subtle" size="sm" />
           <UTooltip :text="`${fullTime(rec.received.at)} · 来自 ${rec.received.peer}${rec.received.login ? '（' + rec.received.login + '）' : ''}`">
@@ -76,7 +76,7 @@ const wakeLine = computed(() => {
           <span v-if="quote === undefined" class="italic">正在找原消息…</span>
           <span v-else-if="quote === null" class="italic">原消息已清理</span>
           <span v-else class="truncate">
-            <span class="font-medium">{{ shortName(quote.envelope.from_agent, owner) }}：</span>{{ quoteText }}
+            <span class="font-medium">{{ shortName(quote.envelope.from_agent, me) }}：</span>{{ quoteText }}
           </span>
         </button>
 

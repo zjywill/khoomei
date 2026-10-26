@@ -6,6 +6,7 @@ import RoomNav from './components/RoomNav.vue'
 import Timeline from './components/Timeline.vue'
 import MessageDetail from './components/MessageDetail.vue'
 import StorageView from './components/StorageView.vue'
+import ContactsView from './components/ContactsView.vue'
 import LoginView from './components/LoginView.vue'
 import PasswordModal from './components/PasswordModal.vue'
 import { authStatus, fatal, needLogin, passwordOpen, route, selected, start } from './state'
@@ -28,13 +29,13 @@ const toast = useToast()
 const unwatch = watch(authStatus, (st) => {
   if (!st) return
   unwatch()
-  if (st.password_set) return
+  if (st.password_set || st.viewer.role !== 'owner') return
   toast.add({
     id: 'no-password',
     title: '面板还没设密码',
     description: st.can_set
-      ? '能连到 hub 的设备（包括朋友）都能看到这里的记录。'
-      : '能连到 hub 的设备都能看到这里的记录。hub 的主人可以在 hub 上运行 khoomei panel-password 设置。',
+      ? '用你的 Tailscale 账号登录的设备都能直接看到整个家，包括私有空间。朋友只看得到自己在的群组。'
+      : '在 hub 上运行 khoomei panel-password 设置。',
     icon: 'i-lucide-lock-open',
     color: 'warning',
     duration: 0,
@@ -57,6 +58,7 @@ watch(
     <UDashboardGroup v-else storage="local" storage-key="khoomei-panel" unit="rem">
       <RoomNav />
       <StorageView v-if="route.view === 'storage'" />
+      <ContactsView v-else-if="route.view === 'contacts'" />
       <template v-else>
         <Timeline />
         <UDashboardPanel v-if="wide && selected" id="detail" :default-size="24" :min-size="18" :max-size="36" resizable>

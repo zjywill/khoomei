@@ -44,16 +44,18 @@ Commands:
   setup    configure this machine as hub or caller (prints a plan; --apply writes)
   agent    hub owner: register an agent (NAME or OWNER/NAME), bind it to a tailnet node, set its wake adapter
   owner    hub owner: register another person's handle and Tailscale login so their agents may connect
+  group    hub owner: create, delete and fill the groups through which friends' agents talk to yours
   prune    hub owner: delete acked (or, for one own agent, pending) records older than a cutoff
   panel-password  hub owner: set, reset (forgotten) or --clear the web panel's password
   serve    run the hub as an embedded tailnet node
   send     send a message to an agent
+  contacts list whom this agent may message, and its groups
   inbox    list pending messages
   wait     long-poll until a message arrives (exit 4 on timeout)
   ack      acknowledge handled messages
   fetch    download the files attached to a pending message
   watch    long-poll in a loop and run a local command when messages arrive (caller-side wake)
-  mcp      serve the four tools over stdio for MCP hosts such as Claude Code and Codex
+  mcp      serve the tools over stdio for MCP hosts such as Claude Code and Codex
   doctor   read-only status report
   version  print the version
 
@@ -98,8 +100,8 @@ func run(args []string) error {
 		"setup": cmdSetup, "agent": cmdAgent, "serve": cmdServe, "send": cmdSend,
 		"inbox": cmdInbox, "wait": cmdWait, "ack": cmdAck, "doctor": cmdDoctor,
 		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner, "prune": cmdPrune, "fetch": cmdFetch,
-		"panel-password": cmdPanelPassword,
-		"version":        func(context.Context, *config.Config, []string) error { fmt.Println("khoomei", hub.Version); return nil },
+		"panel-password": cmdPanelPassword, "group": cmdGroup, "contacts": cmdContacts,
+		"version": func(context.Context, *config.Config, []string) error { fmt.Println("khoomei", hub.Version); return nil },
 	}
 	fn, ok := cmds[rest[0]]
 	if !ok {
@@ -463,7 +465,7 @@ func cmdServe(ctx context.Context, cfg *config.Config, args []string) error {
 	if err != nil {
 		return fmt.Errorf("panel index: %w", err)
 	}
-	pan.IsOwner = h.IsOwner
+	pan.Hub = h
 	h.Observer, h.Admin = pan, pan.Handler()
 	go pan.Run(ctx)
 	if status.Self != nil {
@@ -595,6 +597,7 @@ func cmdSend(ctx context.Context, cfg *config.Config, args []string) error {
 	kind := fs.String("kind", "text", "short label: text, request, reply, notice")
 	replyTo := fs.String("reply-to", "", "id of the message this answers")
 	wake := fs.String("wake", protocol.WakeBatch, "requested wake level: now | batch | none")
+	group := fs.String("group", "", "the group this message belongs to; needed only when the two agents share more than one")
 	as := fs.String("as", "", "send as this agent")
 	var files []string
 	fs.Func("file", "attach a local file (repeatable)", func(p string) error { files = append(files, p); return nil })
@@ -613,7 +616,7 @@ func cmdSend(ctx context.Context, cfg *config.Config, args []string) error {
 		return err
 	}
 	env := protocol.New(from, *to, *text)
-	env.Kind, env.ReplyTo, env.Wake = *kind, *replyTo, *wake
+	env.Kind, env.ReplyTo, env.Wake, env.Group = *kind, *replyTo, *wake, *group
 	if *data != "" {
 		if !json.Valid([]byte(*data)) {
 			return errors.New("--data is not valid JSON")
@@ -666,6 +669,9 @@ func printMessages(items []protocol.Record, asJSON bool) {
 		if e.ReplyTo != "" {
 			head += "  reply_to=" + e.ReplyTo
 		}
+		if e.Group != "" {
+			head += "  group=" + e.Group
+		}
 		fmt.Println(head)
 		if e.Text != "" {
 			fmt.Println("    " + strings.ReplaceAll(e.Text, "\n", "\n    "))
@@ -677,6 +683,111 @@ func printMessages(items []protocol.Record, asJSON bool) {
 			fmt.Printf("    file: %s (%d bytes, sha256 %s…)  →  khoomei fetch %s\n", f.Name, f.Size, f.SHA256[:12], e.ID)
 		}
 	}
+}
+
+func cmdContacts(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("contacts", flag.ExitOnError)
+	as := fs.String("as", "", "agent whose contacts to list")
+	asJSON := fs.Bool("json", false, "print JSON")
+	fs.Parse(args)
+	agent, err := agentName(cfg, *as)
+	if err != nil {
+		return err
+	}
+	c, done, err := hubClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer done()
+	resp, err := c.Contacts(ctx, agent)
+	if err != nil {
+		return err
+	}
+	if resp.Status != 200 {
+		if resp.Status == 404 {
+			return errors.New("this hub has no groups yet; upgrade it to 0.6 or newer")
+		}
+		return errors.New(resp.Error)
+	}
+	if *asJSON {
+		printJSON(map[string]any{"agent": resp.Agent, "groups": resp.Groups, "contacts": resp.Contacts})
+		return nil
+	}
+	var groups []string
+	_ = json.Unmarshal(resp.Groups, &groups)
+	fmt.Printf("%s  groups: %s\n", resp.Agent, strings.Join(append([]string{}, groups...), ", "))
+	if len(resp.Contacts) == 0 {
+		fmt.Println("(nobody yet; the hub owner puts agents into groups)")
+	}
+	for _, ct := range resp.Contacts {
+		where := []string{}
+		if ct.Private {
+			where = append(where, "private")
+		}
+		for _, g := range ct.Groups {
+			where = append(where, "#"+g)
+		}
+		fmt.Printf("  %-32s %s\n", ct.Address, strings.Join(where, " "))
+	}
+	return nil
+}
+
+// cmdGroup manages groups on a running hub through its loopback API, so a change applies at once.
+func cmdGroup(ctx context.Context, cfg *config.Config, args []string) error {
+	const use = `usage: khoomei group list
+       khoomei group create NAME [AGENT...]
+       khoomei group add NAME AGENT...
+       khoomei group remove NAME AGENT...
+       khoomei group delete NAME`
+	if cfg.Role != config.RoleHub {
+		return errors.New("group runs on the hub")
+	}
+	if len(args) == 0 {
+		return errors.New(use)
+	}
+	c, done, err := hubClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer done()
+	var resp *client.Response
+	switch sub, rest := args[0], args[1:]; {
+	case sub == "list" && len(rest) == 0:
+		resp, err = c.Groups(ctx)
+	case sub == "create" && len(rest) >= 1:
+		resp, err = c.GroupCreate(ctx, rest[0], rest[1:])
+	case sub == "add" && len(rest) >= 2:
+		resp, err = c.GroupMembers(ctx, rest[0], rest[1:], nil)
+	case sub == "remove" && len(rest) >= 2:
+		resp, err = c.GroupMembers(ctx, rest[0], nil, rest[1:])
+	case sub == "delete" && len(rest) == 1:
+		resp, err = c.GroupDelete(ctx, rest[0])
+	default:
+		return errors.New(use)
+	}
+	if err != nil {
+		return fmt.Errorf("%w (is khoomei serve running?)", err)
+	}
+	if resp.Status != 200 {
+		return errors.New(resp.Error)
+	}
+	if args[0] != "list" {
+		if resp, err = c.Groups(ctx); err != nil {
+			return err
+		}
+	}
+	var groups []struct {
+		Name    string   `json:"name"`
+		Members []string `json:"members"`
+	}
+	_ = json.Unmarshal(resp.Groups, &groups)
+	if len(groups) == 0 {
+		fmt.Println("(no groups)")
+	}
+	for _, g := range groups {
+		fmt.Printf("#%s  %s\n", g.Name, strings.Join(g.Members, ", "))
+	}
+	return nil
 }
 
 func cmdInbox(ctx context.Context, cfg *config.Config, args []string) error {

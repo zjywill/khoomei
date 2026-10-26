@@ -12,6 +12,7 @@ export interface Envelope {
   wake?: string
   data?: unknown
   files?: FileRef[]
+  group?: string
 }
 
 export interface FileRef {
@@ -52,12 +53,44 @@ export interface Rec {
 
 export interface Room {
   id: string
+  /** private: the owner's own agents; group: a shared group; earlier: friends' traffic from before groups. */
+  kind: 'private' | 'group' | 'earlier'
+  name?: string
   title: string
-  peer?: string
+  /** A group that no longer exists; only the owner still sees its messages. */
+  deleted?: boolean
   members: string[]
   count: number
   pending: number
   last_seq: number
+}
+
+/** Who is looking: the hub owner sees everything, a guest only the groups that hold an agent of theirs. */
+export interface Viewer {
+  role: 'owner' | 'guest'
+  /** A guest's handle when they are a registered friend; empty for a stranger. */
+  handle?: string
+}
+
+export interface ContactAgent {
+  address: string
+  groups: string[]
+  node?: string
+  local?: boolean
+  wake?: string
+}
+
+export interface Person {
+  handle: string
+  me?: boolean
+  login?: string
+  agents: ContactAgent[]
+}
+
+export interface Group {
+  name: string
+  members: string[]
+  created: string
 }
 
 export interface Presence {
@@ -69,7 +102,7 @@ export interface Presence {
 
 export interface PanelEvent {
   seq: number
-  type: 'message' | 'ack' | 'wake' | 'presence' | 'pruned'
+  type: 'message' | 'ack' | 'wake' | 'presence' | 'pruned' | 'groups'
   room?: string
   record?: Rec
   agent?: string
@@ -111,6 +144,7 @@ export interface AuthStatus {
   /** No password yet and this viewer is the hub owner, so the panel may set the first one. */
   can_set: boolean
   min_length: number
+  viewer: Viewer
 }
 
 export class ApiError extends Error {
@@ -163,7 +197,12 @@ export const api = {
   login: (password: string) => post<{}>('auth/login', { password }),
   logout: () => post<{}>('auth/logout', {}),
   setPassword: (current: string, next: string) => post<{}>('auth/password', current ? { current, new: next } : { new: next }),
-  rooms: () => call<{ owner: string; rooms: Room[]; events_next: number }>('rooms'),
+  rooms: () => call<{ owner: string; viewer: Viewer; rooms: Room[]; events_next: number }>('rooms'),
+  contacts: () => call<{ people: Person[] }>('contacts'),
+  groups: () => call<{ groups: Group[] }>('groups'),
+  createGroup: (name: string, members: string[]) => post<{}>('groups', { name, members }),
+  deleteGroup: (name: string) => post<{}>('groups/delete', { name }),
+  changeGroup: (name: string, add: string[], remove: string[]) => post<{}>('groups/members', { name, add, remove }),
   messages: (p: { room: string; member?: string; kinds?: string; unread?: boolean; before?: number; limit?: number }) =>
     call<{ messages: Rec[]; more: boolean }>('messages' + query(p)),
   message: (id: string) => call<{ message: Rec }>('message' + query({ id })),

@@ -79,6 +79,20 @@ func (h *Hub) withAdmin(fn func(http.ResponseWriter, *http.Request, Identity)) h
 	})
 }
 
+// FriendOf returns the handle of the registered friend id is logged in as, or "".
+func (h *Hub) FriendOf(id Identity) string {
+	login := strings.ToLower(id.Login)
+	if id.Local || login == "" || login == taggedLogin {
+		return ""
+	}
+	for handle, o := range h.Cfg.Owners {
+		if handle != h.Cfg.Owner && o != nil && strings.EqualFold(o.Login, login) {
+			return handle
+		}
+	}
+	return ""
+}
+
 // Without a panel handler (tests, or a hub built without one) /admin answers with a placeholder.
 const adminPlaceholder = `<!doctype html>
 <html lang="zh-Hans"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">

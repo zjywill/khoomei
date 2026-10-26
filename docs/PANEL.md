@@ -21,22 +21,38 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 
 ## 群怎么分
 
-不另存"群"这个对象，群是 hub 按地址的 owner 算出来的视图，接口里用这些 id：
+hub 是一个家（[GROUPS.md](GROUPS.md)），面板里的"群"就是家里的几个空间，接口里用这些 id：
 
-- **`self`**（显示为 `junyi`）：两端都是 hub 所有者的 agent。
-- **`peer/alice`**（显示为 `junyi × alice`）：一端是所有者的 agent，另一端是 alice 的。每个登记过的朋友一个。
-- **`hidden`**：两端都不是所有者的，只在存储页里算条数和大小。
+- **`private`**（显示为「私有空间」）：两端都是主人的 agent、信封没带 `group`。只有主人看得到。
+- **`group/<名字>`**：信封的 `group`。主人看得到全部群组；朋友看得到群里有他 agent 的那些。群组删了，消息还在，只剩主人看得到，标「已删除」。
+- **`earlier`**（「以前的往来」）：0.6 以前、有群组之前主人和朋友之间的信。只有主人看得到，没有就不显示。
+- **`hidden`**：0.6 以前朋友自己 agent 之间的信，只在存储页里算条数和大小。0.6 起这种信也要在群组里，不会再有新的。
 
-一封信只有在至少一端属于 hub 所有者时才显示。朋友自己的 agent 之间借你的 hub 传的信不显示，也不显示数量，和"hub 不能读朋友信箱"（[DESIGN.md](DESIGN.md#地址owneragent)）保持一致。单所有者模式下只有一个群。
+单所有者模式下没有朋友，只有私有空间。
 
-## 谁能打开
+## 通讯录
 
-**能连到 hub 的都能打开**，不用登记：hub 本机、tailnet 上的任何节点，也包括通过节点分享连进来的朋友、以及你的 agent 自己的节点（Grok、Muse）。不在 tailnet 上的地址和 `policy.deny` 命中的节点照旧 403，和其他接口一样。所以朋友连得上你的 hub，就看得到你自己 agent 之间的往来；不想这样，就给面板设个[密码](#密码)。
+侧栏最上面。主人看到自己、每个登记过的朋友（还没登记 agent 的也在，提示怎么登记）、每个 agent 的在线状态、节点和所在群组，「拉进群组」直接加减；不在任何群组里的朋友标出来，提醒他还说不上话。朋友看到的是同群的人和 agent，没有节点和登录身份。
+
+## 谁看到什么
+
+**能连到 hub 的都能打开**：hub 本机、tailnet 上的任何节点、通过节点分享连进来的朋友。不在 tailnet 上的地址和 `policy.deny` 命中的节点照旧 403。打开以后看到什么，取决于是谁：
+
+| 来者 | 身份 | 看到 |
+|---|---|---|
+| 回环（hub 本机、`ssh -L` 进来的浏览器、本机 CLI） | 主人 | 全部 |
+| 用面板密码登录过的浏览器 | 主人 | 全部 |
+| 没设密码时，登录身份是主人的节点（见[密码](#密码)） | 主人 | 全部 |
+| 登记过的朋友（WhoIs 登录身份等于 `owners.<handle>.login`） | 访客 | 群里有他 agent 的群组、这些群组的成员和在线状态、通讯录里同群的人；不用密码 |
+| 其他人 | 访客 | 没设密码时什么都没有；设了密码要先登录 |
+
+访客看不到私有空间、以前的往来、存储，也不能清理、建群、改成员（403 `owner_only`）；事件流只给他看得到的群组的事件。访客知道密码的话，点侧栏「主人登录」就变成主人。
 
 ### 密码
 
-默认没有密码，面板每次打开都会在右下角提醒一次，侧栏底部也一直挂着「未设密码」。设了之后，`/admin/api/*` 要先登录；页面本身和打包的 JS/CSS 不拦，它们不含数据，登录页就是这个页面画出来的。
+默认没有密码，主人每次打开面板都会在右下角收到一次提醒，侧栏底部也一直挂着「未设密码」。设了之后，`/admin/api/*` 要先登录；页面本身和打包的 JS/CSS 不拦，它们不含数据，登录页就是这个页面画出来的。
 
+- **回环永远是主人**，不用密码：hub 上的 `khoomei prune`、`khoomei group` 走的就是回环。能登上 hub 机器的人本来就能读它的文件。
 - **谁能设第一个密码**：只有 hub 的主人在面板里设，或者在 hub 上跑 `khoomei panel-password`。"主人"是回环，或者登录身份等于 `owners.<owner>.login` 的节点，没登记时等于 hub 自己节点所属的登录身份。打了 tag 的节点不算任何人。朋友只看得到提醒，设不了：否则谁先打开谁就能把你锁在外面。
 - **修改**：登录后点侧栏「修改密码」，要再输一次当前密码。改完其他浏览器全部退出，当前这个用新密码继续。
 - **忘了**：在 hub 上跑 `khoomei panel-password` 重新设，`--clear` 去掉密码。运行中的 hub 每次请求都读这个文件，不用重启，已有的登录立刻失效。
@@ -68,9 +84,14 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 | `GET /admin/api/events?after=SEQ&timeout=S` | 长轮询，`timeout` 上限 60；有新事件立刻返回 |
 | `GET /admin/api/storage` | 占用空间，见[清理](#清理) |
 | `POST /admin/api/prune` | 清理，见[清理](#清理) |
-| `GET /admin/api/auth` | `{"password_set","logged_in","can_set","min_length"}`；`can_set` 只在没密码且来者是主人时为真 |
+| `GET /admin/api/auth` | `{"password_set","logged_in","can_set","min_length","viewer"}`，`viewer` 是 `{"role":"owner"}` 或 `{"role":"guest","handle"}`；`can_set` 只在没密码且来者是主人时为真 |
 | `POST /admin/api/auth/login` | `{"password"}`；对了发 cookie，错了 401 `wrong_password`，锁定中 429 `locked` |
 | `POST /admin/api/auth/logout` | `{}`；作废当前会话、清 cookie |
+| `GET /admin/api/contacts` | 通讯录：`{"people":[{"handle","me","login","agents":[{"address","groups","node","local","wake"}]}]}`，访客只有同群的、没有 `login` `node` |
+| `GET /admin/api/groups` | `{"groups":[{"name","members","created"}]}`，访客只有自己在的 |
+| `POST /admin/api/groups` | 主人：`{"name","members"?}` 建群 |
+| `POST /admin/api/groups/members` | 主人：`{"name","add":[…],"remove":[…]}`，加的必须是登记过的 agent |
+| `POST /admin/api/groups/delete` | 主人：`{"name"}`，消息留下 |
 | `POST /admin/api/auth/password` | `{"new"}` 设第一个（非主人 403 `not_owner`）；`{"current","new"}` 修改（要已登录，当前密码错 403 `wrong_password`）；太短 400 `weak_password` |
 
 ```jsonc
@@ -177,7 +198,7 @@ khoomei prune --older-than 7d --apply
 
 ### 写操作的额外防护
 
-面板的写操作（清理、登录、退出、改密码）都要防跨站请求（CSRF）：
+面板的写操作（清理、登录、退出、改密码、群组）都要防跨站请求（CSRF）：
 
 - 只接受 `Content-Type: application/json`。普通网页的表单发不出这种请求，跨站的 `fetch` 带它会先触发 CORS 预检，而 hub 不回任何 CORS 头，预检必然失败。
 - 必须带 `X-Khoomei-Panel: 1` 头，理由同上。
@@ -201,6 +222,7 @@ type Observer interface {
 
 - **索引**（`index.go`）：启动时扫一遍 `inbox/` 和 `acked/`，在内存里按群存每条记录的地址、`kind`、`seq`、是否已读、文件大小、唤醒结果，之后随观察者回调增量更新。正文不进内存，翻页时再读文件。
 - **在线状态和事件流**（`panel.go`）：按 agent 记 `last_seen` 和挂着的 `wait` 数；事件放在最近 2000 条的环形缓冲里。都不落盘，重启清零，和唤醒限次的计数一样。
+- **谁在看**（`viewer.go`）：每个 `/admin/api` 请求先定出主人还是访客，按此过滤群组、消息、在线状态、事件、附件和通讯录；群组本身存在 hub 里（`hub.Groups`），面板只读写它。
 - **密码和会话**（`auth.go`）：在面板的路由前面拦 `/admin/api/*`；hub 把它认出的身份放进请求的 context（`hub.IdentityFrom`），面板用 `hub.Hub.IsOwner` 判断谁能设第一个密码。
 - **清理**（`prune.go`）：选中的记录交给 `mailbox.Remove` 在信箱锁里删文件，再从索引里去掉；`Run` 是自动清理的定时器，跑在 `serve` 里。
 - **配置**：`retention`（SPEC §6）和 `khoomei prune` 命令。
@@ -235,7 +257,10 @@ web/                          Vite 项目，只在改前端时需要 Node
     state.ts                  hash 路由、群、消息流、在线状态、长轮询
     format.ts                 时间、大小、头像颜色
     components/
-      RoomNav.vue             侧栏：群、成员和在线点、存储入口、明暗切换
+      RoomNav.vue             侧栏：通讯录、私有空间、群组、成员和在线点、存储、密码、明暗切换
+      ContactsView.vue        通讯录：人、agent、在线状态、所在群组，拉进或移出群组
+      GroupModal.vue          新建群组、管理成员、删除群组
+      LoginView.vue  LoginModal.vue  PasswordModal.vue   登录页、访客的主人登录、设置和修改密码
       Timeline.vue            消息流、筛选、向上翻页、新消息提示
       MessageItem.vue         一条消息：发件人、@收件人、kind、勾、引用、唤醒结果
       MessageDetail.vue       完整信封、received、data JSON
@@ -243,7 +268,7 @@ web/                          Vite 项目，只在改前端时需要 Node
       PruneModal.vue          清理对话框
 internal/panel/
   dist/                       npm run build 的产物，提交进仓库，go:embed 进二进制
-  panel.go  index.go  api.go  prune.go  static.go
+  panel.go  index.go  api.go  prune.go  static.go  auth.go  viewer.go
 ```
 
 `internal/panel/dist` 提交进仓库，这样 `go build`、`go install` 和 release workflow 都不需要 Node。改了前端的人负责重新构建；CI 检查 dist 和源码一致。
@@ -254,7 +279,7 @@ internal/panel/
 UApp
 └─ UDashboardGroup（宽度记在 localStorage）
    ├─ UDashboardSidebar  RoomNav（可折叠、可拖宽；< 1024 是左侧滑出的抽屉）
-   ├─ UDashboardPanel    Timeline（或 StorageView）
+   ├─ UDashboardPanel    Timeline（或 StorageView、ContactsView）
    └─ UDashboardPanel    MessageDetail（≥ 1024 且选中了消息时出现，可拖宽）
 ```
 

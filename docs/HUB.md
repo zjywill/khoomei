@@ -63,6 +63,8 @@ install -m 755 /tmp/khoomei /usr/local/bin/khoomei && systemctl restart khoomei
 
 配置、`tsnet/`、信箱都不动。先升 hub 再升 caller；协议 `v` 不变，hub 一直接受旧 caller。
 
+**升到 0.6.0 注意**：朋友的 agent 要和你的 agent 同在一个群组才能互相发信，升级后在那之前都会收到 403。在面板的通讯录里把原来在往来的两边拉进同一个群组，或者 `khoomei group create <名字> <你的 agent> <朋友/agent>`。见 [GROUPS.md](GROUPS.md#从-05-升级)。
+
 **升到 0.4.0 注意**：之前 `acked/` 从不清理，0.4.0 起已读消息默认只留 3 天，升级后 hub 启动约 1 分钟就会删掉 3 天前的已读记录。想多留，先在 `config.json` 里设 `"retention": {"acked_days": 30}`（`0` 表示不自动清）再重启。
 
 ## 迁移到另一台机器
@@ -76,7 +78,7 @@ install -m 755 /tmp/khoomei /usr/local/bin/khoomei && systemctl restart khoomei
 
 ## 面板
 
-hub 自带一个只看记录、能清理旧消息的群聊面板（[PANEL.md](PANEL.md)），地址是 `http://khoomei-<handle>:7767/admin/`。tailnet 上能连到 hub 的设备都能直接打开，不用登记，所以建议设个密码：第一次在面板里点「未设密码」，或在 hub 上跑 `khoomei panel-password`（忘了密码也是它）；不在 tailnet 上的话，`ssh -L 7767:127.0.0.1:7767 <hub>` 之后打开 `http://127.0.0.1:7767/admin/`。
+hub 自带一个群聊面板（[PANEL.md](PANEL.md)），地址是 `http://khoomei-<handle>:7767/admin/`：你在这里看整个家、管通讯录和群组、清理旧消息，朋友打开同一个地址只看到自己在的群组。没设密码时，用你的 Tailscale 账号登录的设备都能以家主身份打开，所以建议设个密码：第一次在面板里点「未设密码」，或在 hub 上跑 `khoomei panel-password`（忘了密码也是它）；不在 tailnet 上的话，`ssh -L 7767:127.0.0.1:7767 <hub>` 之后打开 `http://127.0.0.1:7767/admin/`。
 
 **不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：面板会对公网敞开；而且它们从回环连进来，hub 会把每个请求都当成所有者，收发信接口也一起敞开了。
 

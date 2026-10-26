@@ -18,7 +18,7 @@ import (
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
-const Version = "0.5.0"
+const Version = "0.6.0"
 
 var (
 	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
@@ -60,6 +60,7 @@ type Hub struct {
 	Cfg      *config.Config
 	Box      *mailbox.Mailbox
 	Blobs    *blobs.Store
+	Groups   *Groups
 	Resolver Resolver
 	Waker    *Waker
 	Logf     func(string, ...any)
@@ -80,7 +81,10 @@ func New(cfg *config.Config, box *mailbox.Mailbox, res Resolver, logf func(strin
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	h := &Hub{Cfg: cfg, Box: box, Blobs: blobs.New(cfg.Home), Resolver: res, Waker: NewWaker(cfg, logf), Logf: logf}
+	h := &Hub{Cfg: cfg, Box: box, Blobs: blobs.New(cfg.Home), Groups: LoadGroups(cfg.Home), Resolver: res, Waker: NewWaker(cfg, logf), Logf: logf}
+	if err := h.Groups.Err(); err != nil {
+		logf("groups unreadable, every group is off until it is fixed: %v", err)
+	}
 	h.Identify = h.identifyRemote
 	h.Waker.OnWake = func(env *protocol.Envelope, result, detail string) {
 		if h.Observer != nil {
@@ -184,6 +188,9 @@ func (h *Hub) Receive(id Identity, env *protocol.Envelope) (fresh bool, err erro
 	if _, ok := h.Cfg.Agents[env.ToAgent]; !ok {
 		return false, BadRequestError("unknown to_agent " + env.ToAgent)
 	}
+	if err := h.route(env); err != nil {
+		return false, err
+	}
 	if err := h.checkFiles(env); err != nil {
 		return false, err
 	}
@@ -228,7 +235,7 @@ func (h *Hub) seen(agent string, waiting int) {
 func (h *Hub) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "v": protocol.Version, "version": Version, "owner": h.Cfg.Owner, "features": []string{"blob"}})
+		writeJSON(w, 200, map[string]any{"ok": true, "v": protocol.Version, "version": Version, "owner": h.Cfg.Owner, "features": []string{"blob", "groups"}})
 	})
 	mux.HandleFunc("POST /msg", h.withIdentity(h.handleMsg))
 	mux.HandleFunc("GET /inbox", h.withIdentity(h.handleInbox))
@@ -236,6 +243,7 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("POST /ack", h.withIdentity(h.handleAck))
 	mux.HandleFunc("PUT /blob", h.withIdentity(h.handleBlobPut))
 	mux.HandleFunc("GET /blob/{sha}", h.withIdentity(h.handleBlobGet)) // GET patterns also answer HEAD
+	mux.HandleFunc("GET /contacts", h.withIdentity(h.handleContacts))
 	mux.HandleFunc("/admin", h.withAdmin(h.handleAdmin))
 	mux.HandleFunc("/admin/", h.withAdmin(h.handleAdmin))
 	mux.HandleFunc("GET /agents", h.withIdentity(func(w http.ResponseWriter, r *http.Request, id Identity) {
@@ -370,6 +378,24 @@ func (h *Hub) handleAck(w http.ResponseWriter, r *http.Request, id Identity) {
 		h.Observer.Acked(agent, done)
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "acked": done})
+}
+
+// handleContacts answers whom an agent may message, with the groups each one shares with it.
+func (h *Hub) handleContacts(w http.ResponseWriter, r *http.Request, id Identity) {
+	agent := h.Qualify(r.URL.Query().Get("agent"))
+	if !protocol.ValidAddress(agent) {
+		fail(w, BadRequestError("bad agent"))
+		return
+	}
+	if err := h.Authorize(id, agent); err != nil {
+		fail(w, err)
+		return
+	}
+	groups := h.Groups.Of(agent)
+	if groups == nil {
+		groups = []string{}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "agent": agent, "groups": groups, "contacts": h.Contacts(agent)})
 }
 
 func fail(w http.ResponseWriter, err error) {

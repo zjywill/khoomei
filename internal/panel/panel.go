@@ -41,9 +41,9 @@ type Panel struct {
 
 	auth *auth
 	pwMu sync.Mutex // one password change at a time
-	// IsOwner decides who may set the first panel password; nil means loopback only. serve hands it
-	// the hub's own rule (hub.Hub.IsOwner).
-	IsOwner func(hub.Identity) bool
+	// Hub supplies the groups and who is the owner or a friend. Without it (some tests) there are no
+	// groups and only loopback counts as the owner.
+	Hub *hub.Hub
 
 	now func() time.Time // tests move the clock
 }
@@ -88,7 +88,7 @@ func New(cfg *config.Config, box *mailbox.Mailbox, bl *blobs.Store, logf func(st
 		presence: map[string]*presence{}, nextSeq: 1, notify: make(chan struct{}), now: time.Now}
 	p.auth = newAuth(cfg.Home, func() time.Time { return p.now() })
 	err := box.Scan(func(rec protocol.Record, acked bool, size int64) {
-		e := newEntry(rec, p.roomOf(rec.Envelope.FromAgent, rec.Envelope.ToAgent), acked, size)
+		e := newEntry(rec, p.roomOf(rec.Envelope), acked, size)
 		if old := p.byKey[e.key()]; old != nil {
 			// A crash between write and rename can leave both copies; acked wins.
 			old.Acked = old.Acked || acked
@@ -108,7 +108,7 @@ func (p *Panel) Stored(rec protocol.Record) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	e := newEntry(rec, p.roomOf(rec.Envelope.FromAgent, rec.Envelope.ToAgent), false, size)
+	e := newEntry(rec, p.roomOf(rec.Envelope), false, size)
 	p.add(e)
 	if e.Room != RoomHidden {
 		r := p.record(e, rec)
