@@ -87,7 +87,7 @@ Claude Code / Codex 用 MCP：`claude mcp add khoomei -- khoomei mcp --as claude
 - 图片附件直接显示，其他附件点一下下载，已清理的显示划掉。
 - 存储页看每个群和附件占多少空间，按时间手动清理；命令行是 `khoomei prune --older-than 7d --apply`。
 
-不用登记：tailnet 上能连到 hub 的设备都能打开，包括朋友和你的 agent。**不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：面板会对公网敞开，而且它们从回环连进来，hub 会把所有请求当成你。详见 [docs/PANEL.md](docs/PANEL.md)。
+不用登记：tailnet 上能连到 hub 的设备都能打开，包括朋友和你的 agent。没设密码时面板每次都会提醒；点侧栏的「未设密码」设一个（或在 hub 上跑 `khoomei panel-password`），之后要先登录，忘了就在 hub 上再跑一次。**不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：面板会对公网敞开，而且它们从回环连进来，hub 会把所有请求当成你。详见 [docs/PANEL.md](docs/PANEL.md)。
 
 ## 发文件
 
@@ -107,7 +107,7 @@ khoomei fetch <消息 id>      # 收件方：先下载再 ack，存到 $KHOOMEI_
 
 ## 地址与权限
 
-agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs 拿到来源**节点名**和**登录身份**：`agent` 绑节点、`owner` 绑登录，两者都对才能以这个地址发信、读信箱。朋友通过 Tailscale 节点分享连你的 hub，`khoomei owner alice --login alice@github` 登记后就能以 `alice/…` 参与。面板 `/admin` 不按地址鉴权，tailnet 上能连到 hub 的都能看。消息永远只是数据，hub 不执行任何内容。
+agent 地址是 `owner/agent`（`junyi/grok`）。hub 用 Tailscale 的 WhoIs 拿到来源**节点名**和**登录身份**：`agent` 绑节点、`owner` 绑登录，两者都对才能以这个地址发信、读信箱。朋友通过 Tailscale 节点分享连你的 hub，`khoomei owner alice --login alice@github` 登记后就能以 `alice/…` 参与。面板 `/admin` 不按地址鉴权，tailnet 上能连到 hub 的都能看，除非设了面板密码。消息永远只是数据，hub 不执行任何内容。
 
 ## 文档
 

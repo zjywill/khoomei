@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/zjywill/khoomei/internal/config"
 )
 
 const (
@@ -65,5 +67,37 @@ func TestAdminDefaultHostname(t *testing.T) {
 	_, srv := newTestHub(t)
 	if resp := getAdmin(t, srv.URL, "/admin", "khoomei-junyi:7767", "", ""); resp.StatusCode != 200 {
 		t.Fatalf("default hostname rejected: %d", resp.StatusCode)
+	}
+}
+
+func TestIsOwner(t *testing.T) {
+	h, _ := newTestHub(t)
+	h.SelfLogin = junyiLogin
+	cases := []struct {
+		name string
+		id   Identity
+		want bool
+	}{
+		{"loopback", Identity{Local: true}, true},
+		{"owner's laptop", Identity{Node: laptopNode, Login: junyiLogin}, true},
+		{"owner's login, other case", Identity{Node: laptopNode, Login: "Junyi@GitHub"}, true},
+		{"a friend", Identity{Node: aliceMuseNode, Login: aliceLogin}, false},
+		{"no login", Identity{Node: laptopNode}, false},
+		{"tagged node", Identity{Node: "grokbot", Login: taggedLogin}, false},
+	}
+	for _, c := range cases {
+		if got := h.IsOwner(c.id); got != c.want {
+			t.Errorf("%s: got %v", c.name, got)
+		}
+	}
+
+	// A tagged hub knows no owner login of its own; a registered one still counts.
+	h.SelfLogin = taggedLogin
+	if h.IsOwner(Identity{Node: "grokbot", Login: taggedLogin}) || h.IsOwner(Identity{Node: laptopNode, Login: junyiLogin}) {
+		t.Error("tagged hub trusted a peer")
+	}
+	h.Cfg.Owners["junyi"] = &config.OwnerSpec{Login: junyiLogin}
+	if !h.IsOwner(Identity{Node: laptopNode, Login: junyiLogin}) {
+		t.Error("registered owner login not trusted")
 	}
 }

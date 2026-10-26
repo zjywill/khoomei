@@ -66,6 +66,8 @@ type Hub struct {
 	// Hosts are the names and addresses the hub answers to besides loopback (short node name, FQDN,
 	// tailnet IPs); /admin rejects any other Host header. serve fills them in once the node is up.
 	Hosts []string
+	// SelfLogin is the Tailscale login the hub's own node runs under; serve fills it in. See IsOwner.
+	SelfLogin string
 	// Observer, when set, hears about every stored record, ack, mailbox visit and wake (docs/PANEL.md).
 	Observer Observer
 	// Admin serves everything under /admin once withAdmin has let the request through; nil shows a placeholder.

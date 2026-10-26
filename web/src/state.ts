@@ -1,8 +1,8 @@
 // Panel state: the route in location.hash, the rooms, the current timeline, presence, and the
 // long-poll loop that keeps them live (docs/PANEL.md#数据流).
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useDocumentVisibility } from '@vueuse/core'
-import { api, ApiError, type PanelEvent, type Presence, type Rec, type Room } from './api'
+import { api, ApiError, setOnLoginRequired, type AuthStatus, type PanelEvent, type Presence, type Rec, type Room } from './api'
 
 // --------------------------------------------------------------------------- route
 
@@ -60,6 +60,11 @@ export const presence = ref<Record<string, Presence>>({})
 export const connection = ref<'connecting' | 'live' | 'retrying'>('connecting')
 export const fatal = ref('') // 403 and friends: nothing to retry
 
+/** The panel password (docs/PANEL.md#密码). null until the first answer. */
+export const authStatus = ref<AuthStatus | null>(null)
+export const needLogin = computed(() => !!authStatus.value?.password_set && !authStatus.value.logged_in)
+export const passwordOpen = ref(false)
+
 export const timeline = reactive({
   items: [] as Rec[],
   more: false,
@@ -95,7 +100,7 @@ function filterParams() {
 let pageToken = 0
 
 export async function loadTimeline() {
-  if (route.view !== 'chat') return
+  if (route.view !== 'chat' || needLogin.value) return
   const token = ++pageToken
   timeline.loading = true
   timeline.error = ''
@@ -160,6 +165,11 @@ export async function lookup(id: string): Promise<Rec | null> {
 
 export function errorText(e: unknown): string {
   if (e instanceof ApiError) {
+    if (e.code === 'wrong_password') return e.status === 403 ? '当前密码不对' : '密码不对'
+    if (e.code === 'locked') return `错太多次了，${e.retryAfter} 秒后再试`
+    if (e.code === 'weak_password') return `密码至少 ${authStatus.value?.min_length ?? 8} 个字符`
+    if (e.code === 'not_owner') return '只有 hub 的主人能设第一个密码：在 hub 上运行 khoomei panel-password'
+    if (e.code === 'login_required') return '需要重新登录'
     if (e.status === 403) return `没有权限：${e.message}`
     return e.message
   }
@@ -244,13 +254,19 @@ function visible(): Promise<void> {
   })
 }
 
-async function eventLoop(start: number) {
+// A session is one logged-in stretch: logging out, or the hub asking for a login, ends its event
+// loop and presence timer, and a new login starts fresh ones.
+let session = 0
+let presenceTimer: ReturnType<typeof setInterval> | undefined
+
+async function eventLoop(start: number, gen: number) {
   let next = start
   let backoff = 1000
-  for (;;) {
+  while (gen === session) {
     await visible()
     try {
       const res = await api.events(next, 50)
+      if (gen !== session) return
       if (connection.value !== 'live') {
         if (connection.value === 'retrying') void resync()
         connection.value = 'live'
@@ -264,6 +280,7 @@ async function eventLoop(start: number) {
       next = res.next
       for (const ev of res.events) apply(ev)
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) return
       if (e instanceof ApiError && e.status === 403) {
         fatal.value = errorText(e)
         return
@@ -279,6 +296,26 @@ async function resync() {
   await Promise.all([loadRooms(), loadPresence(), loadTimeline()])
 }
 
+/** Forget everything shown: the viewer is no longer logged in. */
+function endSession() {
+  session++
+  clearInterval(presenceTimer)
+  rooms.value = []
+  presence.value = {}
+  timeline.items = []
+  timeline.more = false
+  selected.value = null
+  quoted.clear()
+  connection.value = 'connecting'
+}
+
+setOnLoginRequired(() => {
+  if (authStatus.value && !needLogin.value) {
+    authStatus.value = { ...authStatus.value, logged_in: false }
+    endSession()
+  }
+})
+
 export async function start() {
   applyHash()
   window.addEventListener('hashchange', applyHash)
@@ -289,15 +326,26 @@ export async function start() {
       void loadTimeline()
     },
   )
+  await boot()
+}
+
+/** Ask the hub where the password stands, then load the panel unless a login is needed first. */
+async function boot() {
+  const gen = ++session
   for (;;) {
     try {
+      authStatus.value = await api.auth()
+      if (needLogin.value) return
       const res = await loadRooms()
       await Promise.all([loadPresence(), loadTimeline()])
+      if (gen !== session) return
       connection.value = 'live'
-      setInterval(loadPresence, 30_000) // online grace expires without an event
-      void eventLoop(res.events_next)
+      clearInterval(presenceTimer)
+      presenceTimer = setInterval(loadPresence, 30_000) // online grace expires without an event
+      void eventLoop(res.events_next, gen)
       return
     } catch (e) {
+      if (gen !== session || needLogin.value) return
       if (e instanceof ApiError && e.status === 403) {
         fatal.value = errorText(e)
         return
@@ -306,4 +354,24 @@ export async function start() {
       await sleep(3000)
     }
   }
+}
+
+export async function login(password: string) {
+  await api.login(password)
+  await boot()
+}
+
+export async function logout() {
+  try {
+    await api.logout()
+  } finally {
+    endSession()
+    await boot()
+  }
+}
+
+/** Set the first password, or change it. The hub logs this browser in under the new one. */
+export async function setPassword(current: string, next: string) {
+  await api.setPassword(current, next)
+  authStatus.value = await api.auth()
 }

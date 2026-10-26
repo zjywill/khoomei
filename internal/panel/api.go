@@ -14,9 +14,14 @@ import (
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
-// Handler serves /admin: the front end and /admin/api/*. The hub's admin check runs before it.
+// Handler serves /admin: the front end and /admin/api/*. The hub's admin check runs before it, the
+// password gate right after.
 func (p *Panel) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /admin/api/auth", p.handleAuth)
+	mux.HandleFunc("POST /admin/api/auth/login", p.handleLogin)
+	mux.HandleFunc("POST /admin/api/auth/logout", p.handleLogout)
+	mux.HandleFunc("POST /admin/api/auth/password", p.handlePassword)
 	mux.HandleFunc("GET /admin/api/rooms", p.handleRooms)
 	mux.HandleFunc("GET /admin/api/messages", p.handleMessages)
 	mux.HandleFunc("GET /admin/api/message", p.handleMessage)
@@ -30,7 +35,7 @@ func (p *Panel) Handler() http.Handler {
 	})
 	mux.Handle("/admin/", staticHandler())
 	mux.Handle("/admin", staticHandler())
-	return mux
+	return p.gate(mux)
 }
 
 type roomOut struct {

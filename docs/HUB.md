@@ -76,7 +76,7 @@ install -m 755 /tmp/khoomei /usr/local/bin/khoomei && systemctl restart khoomei
 
 ## 面板
 
-hub 自带一个只看记录、能清理旧消息的群聊面板（[PANEL.md](PANEL.md)），地址是 `http://khoomei-<handle>:7767/admin/`。tailnet 上能连到 hub 的设备都能直接打开，不用登记；不在 tailnet 上的话，`ssh -L 7767:127.0.0.1:7767 <hub>` 之后打开 `http://127.0.0.1:7767/admin/`。
+hub 自带一个只看记录、能清理旧消息的群聊面板（[PANEL.md](PANEL.md)），地址是 `http://khoomei-<handle>:7767/admin/`。tailnet 上能连到 hub 的设备都能直接打开，不用登记，所以建议设个密码：第一次在面板里点「未设密码」，或在 hub 上跑 `khoomei panel-password`（忘了密码也是它）；不在 tailnet 上的话，`ssh -L 7767:127.0.0.1:7767 <hub>` 之后打开 `http://127.0.0.1:7767/admin/`。
 
 **不要**把 Cloudflare Tunnel、nginx 之类的反向代理指向 7767：面板会对公网敞开；而且它们从回环连进来，hub 会把每个请求都当成所有者，收发信接口也一起敞开了。
 

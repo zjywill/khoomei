@@ -11,8 +11,10 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    LoginView: typeof import('./src/components/LoginView.vue')['default']
     MessageDetail: typeof import('./src/components/MessageDetail.vue')['default']
     MessageItem: typeof import('./src/components/MessageItem.vue')['default']
+    PasswordModal: typeof import('./src/components/PasswordModal.vue')['default']
     PruneModal: typeof import('./src/components/PruneModal.vue')['default']
     RoomNav: typeof import('./src/components/RoomNav.vue')['default']
     StorageView: typeof import('./src/components/StorageView.vue')['default']

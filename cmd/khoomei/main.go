@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
 	"tailscale.com/tsnet"
 
 	"github.com/zjywill/khoomei/internal/client"
@@ -43,6 +45,7 @@ Commands:
   agent    hub owner: register an agent (NAME or OWNER/NAME), bind it to a tailnet node, set its wake adapter
   owner    hub owner: register another person's handle and Tailscale login so their agents may connect
   prune    hub owner: delete acked (or, for one own agent, pending) records older than a cutoff
+  panel-password  hub owner: set, reset (forgotten) or --clear the web panel's password
   serve    run the hub as an embedded tailnet node
   send     send a message to an agent
   inbox    list pending messages
@@ -95,7 +98,8 @@ func run(args []string) error {
 		"setup": cmdSetup, "agent": cmdAgent, "serve": cmdServe, "send": cmdSend,
 		"inbox": cmdInbox, "wait": cmdWait, "ack": cmdAck, "doctor": cmdDoctor,
 		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner, "prune": cmdPrune, "fetch": cmdFetch,
-		"version": func(context.Context, *config.Config, []string) error { fmt.Println("khoomei", hub.Version); return nil },
+		"panel-password": cmdPanelPassword,
+		"version":        func(context.Context, *config.Config, []string) error { fmt.Println("khoomei", hub.Version); return nil },
 	}
 	fn, ok := cmds[rest[0]]
 	if !ok {
@@ -321,6 +325,63 @@ func cmdOwner(_ context.Context, cfg *config.Config, args []string) error {
 	return nil
 }
 
+// cmdPanelPassword writes <home>/panel_password. The running hub reads that file on every request,
+// so the change takes effect at once and logs out every browser; no restart.
+func cmdPanelPassword(_ context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("panel-password", flag.ExitOnError)
+	clearPw := fs.Bool("clear", false, "remove the password: the panel is open to every node that reaches the hub again")
+	fs.Parse(args)
+	if cfg.Role != config.RoleHub {
+		return errors.New("panel-password runs on the hub")
+	}
+	if *clearPw {
+		if err := panel.ClearPassword(cfg.Home); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "panel password removed; the panel is open to every node that reaches the hub")
+		return nil
+	}
+	pw, err := readNewPassword()
+	if err != nil {
+		return err
+	}
+	if err := panel.SetPassword(cfg.Home, pw); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "panel password set; every browser has to log in again")
+	return nil
+}
+
+// readNewPassword asks twice without echo on a terminal, or reads one line from a pipe.
+func readNewPassword() (string, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && line == "" {
+			return "", errors.New("no password on stdin")
+		}
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+	ask := func(prompt string) (string, error) {
+		fmt.Fprint(os.Stderr, prompt)
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		return string(b), err
+	}
+	pw, err := ask(fmt.Sprintf("new panel password (at least %d characters): ", panel.MinPassword))
+	if err != nil {
+		return "", err
+	}
+	again, err := ask("again: ")
+	if err != nil {
+		return "", err
+	}
+	if pw != again {
+		return "", errors.New("the two passwords differ")
+	}
+	return pw, nil
+}
+
 func cmdPrune(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("prune", flag.ExitOnError)
 	older := fs.String("older-than", "24h", "age cutoff: 36h, 7d …; anything under 24h counts as 24h")
@@ -402,8 +463,14 @@ func cmdServe(ctx context.Context, cfg *config.Config, args []string) error {
 	if err != nil {
 		return fmt.Errorf("panel index: %w", err)
 	}
+	pan.IsOwner = h.IsOwner
 	h.Observer, h.Admin = pan, pan.Handler()
 	go pan.Run(ctx)
+	if status.Self != nil {
+		if u, ok := status.User[status.Self.UserID]; ok {
+			h.SelfLogin = u.LoginName
+		}
+	}
 	if fqdn := strings.TrimSuffix(status.Self.DNSName, "."); fqdn != "" {
 		h.Hosts = append(h.Hosts, fqdn, strings.SplitN(fqdn, ".", 2)[0])
 	}

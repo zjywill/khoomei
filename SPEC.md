@@ -78,7 +78,7 @@ Body：`{"agent":"NAME","ids":["…"]}`。把消息从 `inbox/NAME/` 移到 `ack
 `agent` 按 §1 判定后，还必须是这个文件的**当事人**：上传者，或某封附带它的信的 `from_agent` / `to_agent`。否则一律 404，不暴露文件是否存在。响应是 `application/octet-stream` 附件（`name` 只用作下载文件名），支持 `Range` 和 `ETag`。
 
 ### `/admin`
-群聊面板和它的接口（`/admin/api/*`），详见 [docs/PANEL.md](docs/PANEL.md)。不属于 caller 协议，caller 永远用不到。准入和其他接口的身份一步相同（`local` 或任一 tailnet peer，`policy.deny` 照旧），不再按 agent 判定；另外 `Host` 头必须是 hub 自己的名字或地址，否则 403。唯一的写操作是 `POST /admin/api/prune`。
+群聊面板和它的接口（`/admin/api/*`），详见 [docs/PANEL.md](docs/PANEL.md)。不属于 caller 协议，caller 永远用不到。准入和其他接口的身份一步相同（`local` 或任一 tailnet peer，`policy.deny` 照旧），不再按 agent 判定；另外 `Host` 头必须是 hub 自己的名字或地址，否则 403。设了面板密码后，`/admin/api/*` 还要登录（cookie 会话），见 [docs/PANEL.md#密码](docs/PANEL.md#密码)。
 
 ## 3. 信封
 

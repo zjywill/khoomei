@@ -2,13 +2,10 @@ package panel
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/zjywill/khoomei/internal/blobs"
@@ -406,25 +403,11 @@ func (p *Panel) handleStorage(w http.ResponseWriter, r *http.Request) {
 		"blob": map[string]any{"total_mb": p.cfg.Blob.TotalBytes() >> 20, "keep_hours": int(p.cfg.Blob.Keep().Hours()), "max_mb": p.cfg.Blob.MaxBytes() >> 20}})
 }
 
-// handlePrune is the panel's only write. Besides the hub's Host check it insists on a JSON
-// body and the X-Khoomei-Panel header, which a cross-site page cannot send without a CORS preflight
-// that the hub never answers, and on an Origin, when present, that matches Host.
+// handlePrune: besides the hub's Host check (and the password, when one is set) it follows the
+// rules of every panel write, see panelWrite.
 func (p *Panel) handlePrune(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") || r.Header.Get("X-Khoomei-Panel") != "1" {
-		writeJSON(w, 403, map[string]any{"ok": false, "error": "prune needs Content-Type: application/json and X-Khoomei-Panel: 1"})
-		return
-	}
-	if o := r.Header.Get("Origin"); o != "" {
-		if u, err := url.Parse(o); err != nil || !strings.EqualFold(u.Host, r.Host) {
-			writeJSON(w, 403, map[string]any{"ok": false, "error": "cross-origin request"})
-			return
-		}
-	}
 	var req PruneRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]any{"ok": false, "error": "invalid json"})
+	if !panelWrite(w, r, &req) {
 		return
 	}
 	if req.Room == RoomHidden && req.What != "acked" {

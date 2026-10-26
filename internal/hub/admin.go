@@ -1,10 +1,40 @@
 package hub
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
 )
+
+type identityKey struct{}
+
+// IdentityFrom returns the identity the hub settled on for an /admin request.
+func IdentityFrom(ctx context.Context) (Identity, bool) {
+	id, ok := ctx.Value(identityKey{}).(Identity)
+	return id, ok
+}
+
+// taggedLogin is what WhoIs reports as the login of a tagged node: nobody in particular.
+const taggedLogin = "tagged-devices"
+
+// IsOwner says whether id is the hub owner in person, which only matters for setting the first panel
+// password: loopback, or a node logged in as the owner, that is the login registered for the owner
+// handle, or else the login the hub's own node runs under (SelfLogin). A tagged node is nobody's.
+func (h *Hub) IsOwner(id Identity) bool {
+	if id.Local {
+		return true
+	}
+	login := strings.ToLower(id.Login)
+	if login == "" || login == taggedLogin {
+		return false
+	}
+	if o := h.Cfg.Owners[h.Cfg.Owner]; o != nil && o.Login != "" && strings.EqualFold(o.Login, login) {
+		return true
+	}
+	self := strings.ToLower(h.SelfLogin)
+	return self != "" && self != taggedLogin && self == login
+}
 
 // hostAllowed checks the Host header against the hub's own names, so a page served from another
 // origin cannot reach /admin through DNS rebinding. Matching is exact: a prefix rule would let
@@ -58,9 +88,9 @@ const adminPlaceholder = `<!doctype html>
 </body></html>
 `
 
-func (h *Hub) handleAdmin(w http.ResponseWriter, r *http.Request, _ Identity) {
+func (h *Hub) handleAdmin(w http.ResponseWriter, r *http.Request, id Identity) {
 	if h.Admin != nil {
-		h.Admin.ServeHTTP(w, r)
+		h.Admin.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, id)))
 		return
 	}
 	if r.Method != http.MethodGet {

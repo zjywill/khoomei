@@ -105,10 +105,24 @@ export interface PruneRequest {
 
 const base = '/admin/api/'
 
+export interface AuthStatus {
+  password_set: boolean
+  logged_in: boolean
+  /** No password yet and this viewer is the hub owner, so the panel may set the first one. */
+  can_set: boolean
+  min_length: number
+}
+
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public code = '', public retryAfter = 0) {
     super(message)
   }
+}
+
+/** Called when the hub answers 401 login_required: the session ended (password changed, idle, restart). */
+export let onLoginRequired = () => {}
+export function setOnLoginRequired(fn: () => void) {
+  onLoginRequired = fn
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -120,7 +134,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     // fall through with the status
   }
   if (!res.ok || !body?.ok) {
-    throw new ApiError(res.status, body?.error || `HTTP ${res.status}`)
+    if (res.status === 401 && body?.code === 'login_required') onLoginRequired()
+    throw new ApiError(res.status, body?.error || `HTTP ${res.status}`, body?.code ?? '', body?.retry_after ?? 0)
   }
   return body as T
 }
@@ -134,7 +149,20 @@ function query(params: Record<string, string | number | boolean | undefined>) {
   return s ? '?' + s : ''
 }
 
+// Every panel write sends JSON with X-Khoomei-Panel, which a cross-site form cannot (docs/PANEL.md).
+function post<T>(path: string, body: unknown) {
+  return call<T>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Khoomei-Panel': '1' },
+    body: JSON.stringify(body),
+  })
+}
+
 export const api = {
+  auth: () => call<AuthStatus>('auth'),
+  login: (password: string) => post<{}>('auth/login', { password }),
+  logout: () => post<{}>('auth/logout', {}),
+  setPassword: (current: string, next: string) => post<{}>('auth/password', current ? { current, new: next } : { new: next }),
   rooms: () => call<{ owner: string; rooms: Room[]; events_next: number }>('rooms'),
   messages: (p: { room: string; member?: string; kinds?: string; unread?: boolean; before?: number; limit?: number }) =>
     call<{ messages: Rec[]; more: boolean }>('messages' + query(p)),
@@ -143,10 +171,5 @@ export const api = {
   events: (after: number, timeout: number, signal?: AbortSignal) =>
     call<{ next: number; reset: boolean; events: PanelEvent[] }>(`events?after=${after}&timeout=${timeout}`, { signal }),
   storage: () => call<Storage>('storage'),
-  prune: (req: PruneRequest) =>
-    call<{ dry_run: boolean; count: number; bytes: number }>('prune', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Khoomei-Panel': '1' },
-      body: JSON.stringify(req),
-    }),
+  prune: (req: PruneRequest) => post<{ dry_run: boolean; count: number; bytes: number }>('prune', req),
 }

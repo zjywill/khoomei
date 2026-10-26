@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { navigate, owner, presence, rooms, route } from '../state'
+import { authStatus, logout, navigate, owner, passwordOpen, presence, rooms, route } from '../state'
 import { ago, avatarClass, initials, shortName } from '../format'
 
 const room = computed(() => rooms.value.find((r) => r.id === route.room))
@@ -101,6 +101,39 @@ function toggleMember(addr: string) {
           class="w-full"
           @click="go({ view: 'storage' })"
         />
+        <UButton
+          v-if="authStatus && !authStatus.password_set"
+          icon="i-lucide-lock-open"
+          :label="collapsed ? undefined : '未设密码'"
+          aria-label="未设密码，点这里设置"
+          color="warning"
+          variant="soft"
+          :square="collapsed"
+          class="w-full"
+          @click="passwordOpen = true"
+        />
+        <template v-else-if="authStatus?.logged_in">
+          <UButton
+            icon="i-lucide-key-round"
+            :label="collapsed ? undefined : '修改密码'"
+            aria-label="修改密码"
+            color="neutral"
+            variant="ghost"
+            :square="collapsed"
+            class="w-full"
+            @click="passwordOpen = true"
+          />
+          <UButton
+            icon="i-lucide-log-out"
+            :label="collapsed ? undefined : '退出登录'"
+            aria-label="退出登录"
+            color="neutral"
+            variant="ghost"
+            :square="collapsed"
+            class="w-full"
+            @click="logout"
+          />
+        </template>
         <UColorModeSelect v-if="!collapsed" size="sm" class="w-full" />
       </div>
     </template>

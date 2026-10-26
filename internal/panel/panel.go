@@ -1,6 +1,6 @@
 // Package panel is the hub's web panel (docs/PANEL.md): an in-memory index of the mailboxes grouped
 // into rooms, member presence, a live event stream, pruning, and the embedded front end. The hub
-// feeds it through hub.Observer and mounts Handler under /admin.
+// feeds it through hub.Observer and mounts Handler under /admin; a password, once set, guards the API.
 package panel
 
 import (
@@ -12,6 +12,7 @@ import (
 
 	"github.com/zjywill/khoomei/internal/blobs"
 	"github.com/zjywill/khoomei/internal/config"
+	"github.com/zjywill/khoomei/internal/hub"
 	"github.com/zjywill/khoomei/internal/mailbox"
 	"github.com/zjywill/khoomei/internal/protocol"
 )
@@ -37,6 +38,12 @@ type Panel struct {
 	notify   chan struct{} // closed and replaced on every event
 	lastRun  time.Time     // last automatic prune
 	lastGone int
+
+	auth *auth
+	pwMu sync.Mutex // one password change at a time
+	// IsOwner decides who may set the first panel password; nil means loopback only. serve hands it
+	// the hub's own rule (hub.Hub.IsOwner).
+	IsOwner func(hub.Identity) bool
 
 	now func() time.Time // tests move the clock
 }
@@ -79,6 +86,7 @@ func New(cfg *config.Config, box *mailbox.Mailbox, bl *blobs.Store, logf func(st
 	}
 	p := &Panel{cfg: cfg, box: box, blobs: bl, logf: logf, byKey: map[string]*entry{}, rooms: map[string][]*entry{}, refs: map[string]int{},
 		presence: map[string]*presence{}, nextSeq: 1, notify: make(chan struct{}), now: time.Now}
+	p.auth = newAuth(cfg.Home, func() time.Time { return p.now() })
 	err := box.Scan(func(rec protocol.Record, acked bool, size int64) {
 		e := newEntry(rec, p.roomOf(rec.Envelope.FromAgent, rec.Envelope.ToAgent), acked, size)
 		if old := p.byKey[e.key()]; old != nil {

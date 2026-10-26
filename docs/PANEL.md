@@ -31,7 +31,20 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 
 ## 谁能打开
 
-**能连到 hub 的都能打开**，不用登记：hub 本机、tailnet 上的任何节点，也包括通过节点分享连进来的朋友、以及你的 agent 自己的节点（Grok、Muse）。tailnet 本身就是边界，面板也没有危险操作，最多是清理已读消息。不在 tailnet 上的地址和 `policy.deny` 命中的节点照旧 403，和其他接口一样。
+**能连到 hub 的都能打开**，不用登记：hub 本机、tailnet 上的任何节点，也包括通过节点分享连进来的朋友、以及你的 agent 自己的节点（Grok、Muse）。不在 tailnet 上的地址和 `policy.deny` 命中的节点照旧 403，和其他接口一样。所以朋友连得上你的 hub，就看得到你自己 agent 之间的往来；不想这样，就给面板设个[密码](#密码)。
+
+### 密码
+
+默认没有密码，面板每次打开都会在右下角提醒一次，侧栏底部也一直挂着「未设密码」。设了之后，`/admin/api/*` 要先登录；页面本身和打包的 JS/CSS 不拦，它们不含数据，登录页就是这个页面画出来的。
+
+- **谁能设第一个密码**：只有 hub 的主人在面板里设，或者在 hub 上跑 `khoomei panel-password`。"主人"是回环，或者登录身份等于 `owners.<owner>.login` 的节点，没登记时等于 hub 自己节点所属的登录身份。打了 tag 的节点不算任何人。朋友只看得到提醒，设不了：否则谁先打开谁就能把你锁在外面。
+- **修改**：登录后点侧栏「修改密码」，要再输一次当前密码。改完其他浏览器全部退出，当前这个用新密码继续。
+- **忘了**：在 hub 上跑 `khoomei panel-password` 重新设，`--clear` 去掉密码。运行中的 hub 每次请求都读这个文件，不用重启，已有的登录立刻失效。
+- **存储**：`<home>/panel_password`，权限 0600，内容是 argon2id 哈希（19 MiB、t=2、p=1，PHC 格式），不放进 `config.json`。密码 8 个字符以上，最长 256 字节。
+- **会话**：登录成功发一个随机 32 字节的令牌，hub 只在内存里存它的 SHA-256，并记下签发时的密码哈希；密码一变（面板或 CLI），旧会话全部作废。绝对有效期 30 天，7 天不用也失效，最多同时 64 个，hub 重启全部退出。
+- **Cookie**：`khoomei_session`，`HttpOnly`、`SameSite=Strict`、`Path=/admin`。hub 走的是 tailnet 上的明文 HTTP（WireGuard 已经加密），所以不加 `Secure`；如果哪天前面有 TLS，hub 看到 TLS 连接会自动加上。
+- **防猜**：同一个来源（节点，或回环）连续错 5 次后锁 1 分钟，再错一次翻倍，最多 15 分钟，期间回 429 和 `Retry-After`；同一时间最多算两个哈希。修改密码时输错当前密码也算一次。
+- 登录、退出、改密码都是面板写操作，和清理一样受[写操作的额外防护](#写操作的额外防护)。
 
 剩下的防护都是针对浏览器的：
 
@@ -43,7 +56,7 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 
 ## 接口
 
-都挂在现有的 7767 端口上。除了清理的 `POST /admin/api/prune`，全部是 `GET`。所有 `/admin` 路径先过 `Host` 校验，失败 403。
+都挂在现有的 7767 端口上。所有 `/admin` 路径先过 `Host` 校验，失败 403；设了密码时，除了 `auth` 这几个，`/admin/api/*` 没登录一律 401 `{"code":"login_required"}`。
 
 | 接口 | 返回 |
 |---|---|
@@ -55,6 +68,10 @@ hub 上已经有所有人的信箱，把它们按时间合起来，就是一个�
 | `GET /admin/api/events?after=SEQ&timeout=S` | 长轮询，`timeout` 上限 60；有新事件立刻返回 |
 | `GET /admin/api/storage` | 占用空间，见[清理](#清理) |
 | `POST /admin/api/prune` | 清理，见[清理](#清理) |
+| `GET /admin/api/auth` | `{"password_set","logged_in","can_set","min_length"}`；`can_set` 只在没密码且来者是主人时为真 |
+| `POST /admin/api/auth/login` | `{"password"}`；对了发 cookie，错了 401 `wrong_password`，锁定中 429 `locked` |
+| `POST /admin/api/auth/logout` | `{}`；作废当前会话、清 cookie |
+| `POST /admin/api/auth/password` | `{"new"}` 设第一个（非主人 403 `not_owner`）；`{"current","new"}` 修改（要已登录，当前密码错 403 `wrong_password`）；太短 400 `weak_password` |
 
 ```jsonc
 // GET /admin/api/rooms
@@ -160,13 +177,13 @@ khoomei prune --older-than 7d --apply
 
 ### 写操作的额外防护
 
-面板以前只有 `GET`，加了 `POST` 就要防跨站请求（CSRF）：
+面板的写操作（清理、登录、退出、改密码）都要防跨站请求（CSRF）：
 
 - 只接受 `Content-Type: application/json`。普通网页的表单发不出这种请求，跨站的 `fetch` 带它会先触发 CORS 预检，而 hub 不回任何 CORS 头，预检必然失败。
 - 必须带 `X-Khoomei-Panel: 1` 头，理由同上。
 - 有 `Origin` 头时必须和 `Host` 一致。
 - 方法不对、参数不合规则是 400，删除时出错是 500。
-- 加上前面的管理员鉴权和 `Host` 校验，`/admin/api/prune` 只有你自己登记过的机器上、从面板页面本身发出的请求才能成功。
+- 加上前面的 `Host` 校验和 cookie 的 `SameSite=Strict`，这些写操作只有从面板页面本身发出的请求才能成功。
 
 ## hub 里的实现
 
@@ -184,6 +201,7 @@ type Observer interface {
 
 - **索引**（`index.go`）：启动时扫一遍 `inbox/` 和 `acked/`，在内存里按群存每条记录的地址、`kind`、`seq`、是否已读、文件大小、唤醒结果，之后随观察者回调增量更新。正文不进内存，翻页时再读文件。
 - **在线状态和事件流**（`panel.go`）：按 agent 记 `last_seen` 和挂着的 `wait` 数；事件放在最近 2000 条的环形缓冲里。都不落盘，重启清零，和唤醒限次的计数一样。
+- **密码和会话**（`auth.go`）：在面板的路由前面拦 `/admin/api/*`；hub 把它认出的身份放进请求的 context（`hub.IdentityFrom`），面板用 `hub.Hub.IsOwner` 判断谁能设第一个密码。
 - **清理**（`prune.go`）：选中的记录交给 `mailbox.Remove` 在信箱锁里删文件，再从索引里去掉；`Run` 是自动清理的定时器，跑在 `serve` 里。
 - **配置**：`retention`（SPEC §6）和 `khoomei prune` 命令。
 
