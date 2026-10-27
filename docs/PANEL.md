@@ -32,7 +32,7 @@ hub 是一个家（[GROUPS.md](GROUPS.md)），面板里的"群"就是家里的�
 
 ## 通讯录
 
-侧栏最上面。主人看到自己、每个登记过的朋友（还没登记 agent 的也在，提示怎么登记）、每个 agent 的在线状态、节点和所在群组，「拉进群组」直接加减；不在任何群组里的朋友标出来，提醒他还说不上话。朋友看到的是同群的人和 agent，没有节点和登录身份。
+侧栏最上面。主人看到自己、每个来过的朋友（自己报到的，或手动登记的）、每个 agent 的在线状态、节点和所在群组，「拉进群组」直接加减；不在任何群组里的朋友标出来，提醒他还说不上话。有 agent 自己报到时，主人的面板弹出"xx 来了"，点一下到通讯录。自己报到的人和 agent 可以「移出」或「移出并拉黑」（[GROUPS.md](GROUPS.md#报到)）；手动登记的只能用命令改。群组成员对话框里有"新来的 agent 自动进这个群组"开关。朋友看到的是同群的人和 agent，没有节点和登录身份。
 
 ## 谁看到什么
 
@@ -92,6 +92,9 @@ hub 是一个家（[GROUPS.md](GROUPS.md)），面板里的"群"就是家里的�
 | `POST /admin/api/groups` | 主人：`{"name","members"?}` 建群 |
 | `POST /admin/api/groups/members` | 主人：`{"name","add":[…],"remove":[…]}`，加的必须是登记过的 agent |
 | `POST /admin/api/groups/delete` | 主人：`{"name"}`，消息留下 |
+| `POST /admin/api/groups/open` | 主人：`{"name","open"}`，新报到的 agent 自动进这个群组 |
+| `POST /admin/api/people/remove` | 主人：`{"handle","block"}`，移出一个自己报到的人和他的 agent（离开所有群组）；`block` 还拒绝他的登录身份 |
+| `POST /admin/api/agents/remove` | 主人：`{"address"}`，移出一个自己报到的 agent |
 | `POST /admin/api/auth/password` | `{"new"}` 设第一个（非主人 403 `not_owner`）；`{"current","new"}` 修改（要已登录，当前密码错 403 `wrong_password`）；太短 400 `weak_password` |
 
 ```jsonc

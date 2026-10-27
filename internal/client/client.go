@@ -44,6 +44,11 @@ type Response struct {
 	Count     int               `json:"count,omitempty"`
 	Bytes     int64             `json:"bytes,omitempty"`
 	Contacts  []Contact         `json:"contacts,omitempty"`
+	Address   string            `json:"address,omitempty"` // /join
+	Owner     string            `json:"owner,omitempty"`
+	HubOwner  string            `json:"hub_owner,omitempty"`
+	NewPerson bool              `json:"new_person,omitempty"`
+	NewAgent  bool              `json:"new_agent,omitempty"`
 	Groups    json.RawMessage   `json:"groups,omitempty"` // /contacts: names; /admin/api/groups: objects
 }
 
@@ -164,6 +169,18 @@ func (c *Client) Contacts(ctx context.Context, agent string) (*Response, error) 
 	return c.call(ctx, http.MethodGet, "/contacts?agent="+url.QueryEscape(agent), nil, 30*time.Second)
 }
 
+// Join registers agent with the hub by itself (docs/GROUPS.md#报到); owner may be empty.
+func (c *Client) Join(ctx context.Context, agent, owner, wakeURL, wakeSecret string) (*Response, error) {
+	body := map[string]any{"agent": agent}
+	if owner != "" {
+		body["owner"] = owner
+	}
+	if wakeURL != "" {
+		body["wake"] = map[string]any{"url": wakeURL, "secret": wakeSecret}
+	}
+	return c.call(ctx, http.MethodPost, "/join", body, 30*time.Second)
+}
+
 // Group calls are the hub owner's, made from the hub over loopback (docs/GROUPS.md#命令).
 func (c *Client) Groups(ctx context.Context) (*Response, error) {
 	return c.call(ctx, http.MethodGet, "/admin/api/groups", nil, 30*time.Second)
@@ -179,6 +196,10 @@ func (c *Client) GroupDelete(ctx context.Context, name string) (*Response, error
 
 func (c *Client) GroupMembers(ctx context.Context, name string, add, remove []string) (*Response, error) {
 	return c.panelPost(ctx, "/admin/api/groups/members", map[string]any{"name": name, "add": add, "remove": remove})
+}
+
+func (c *Client) GroupOpen(ctx context.Context, name string, open bool) (*Response, error) {
+	return c.panelPost(ctx, "/admin/api/groups/open", map[string]any{"name": name, "open": open})
 }
 
 func (c *Client) panelPost(ctx context.Context, path string, body any) (*Response, error) {

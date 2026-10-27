@@ -30,6 +30,11 @@ type WakeAdapter struct {
 	URLFile    string   `json:"url_file,omitempty"`
 	SecretFile string   `json:"secret_file,omitempty"`
 	Argv       []string `json:"argv,omitempty"`
+	// URL and Secret come from an agent that joined by itself (docs/GROUPS.md#报到) and handed the hub
+	// its own webhook. They live in contacts.json, never in config.json, and the hub calls them only
+	// over https to public addresses.
+	URL    string `json:"-"`
+	Secret string `json:"-"`
 }
 
 type AgentSpec struct {
@@ -233,7 +238,8 @@ func (c *Config) TSNetDir() string {
 }
 
 // TSNetHostname is the embedded node's name on the tailnet: khoomei-<owner> for a hub,
-// khoomei-<owner>-<agent> for a caller; "hub" stands in for a missing owner.
+// khoomei-<owner>-<agent> for a caller; "hub" stands in for a missing owner. A caller about to join
+// has no owner yet; `khoomei join` pins the name in use, so getting a handle never renames the node.
 func (c *Config) TSNetHostname() string {
 	if c.TSNet.Hostname != "" {
 		return c.TSNet.Hostname

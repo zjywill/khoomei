@@ -18,7 +18,7 @@ import (
 	"github.com/zjywill/khoomei/internal/protocol"
 )
 
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 var (
 	tailnetV4 = netip.MustParsePrefix("100.64.0.0/10")
@@ -61,6 +61,7 @@ type Hub struct {
 	Box      *mailbox.Mailbox
 	Blobs    *blobs.Store
 	Groups   *Groups
+	Dir      *Directory // who may connect: config.json plus contacts.json
 	Resolver Resolver
 	Waker    *Waker
 	Logf     func(string, ...any)
@@ -81,9 +82,13 @@ func New(cfg *config.Config, box *mailbox.Mailbox, res Resolver, logf func(strin
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	h := &Hub{Cfg: cfg, Box: box, Blobs: blobs.New(cfg.Home), Groups: LoadGroups(cfg.Home), Resolver: res, Waker: NewWaker(cfg, logf), Logf: logf}
+	h := &Hub{Cfg: cfg, Box: box, Blobs: blobs.New(cfg.Home), Groups: LoadGroups(cfg.Home), Dir: LoadDirectory(cfg), Resolver: res, Waker: NewWaker(cfg, logf), Logf: logf}
+	h.Waker.Lookup = h.Dir.Agent
 	if err := h.Groups.Err(); err != nil {
 		logf("groups unreadable, every group is off until it is fixed: %v", err)
+	}
+	if err := h.Dir.Err(); err != nil {
+		logf("contacts unreadable, nobody can join until it is fixed: %v", err)
 	}
 	h.Identify = h.identifyRemote
 	h.Waker.OnWake = func(env *protocol.Envelope, result, detail string) {
@@ -143,7 +148,7 @@ func (h *Hub) Qualify(addr string) string { return protocol.Qualify(addr, h.Cfg.
 func (h *Hub) Authorize(id Identity, addr string) error {
 	addr = h.Qualify(addr)
 	owner, _, _ := protocol.SplitAddress(addr)
-	spec := h.Cfg.Agents[addr]
+	spec := h.Dir.Agent(addr)
 	if id.Local {
 		if owner != h.Cfg.Owner {
 			return ForbiddenError(fmt.Sprintf("%s belongs to %s, not to this hub's owner", addr, owner))
@@ -154,7 +159,7 @@ func (h *Hub) Authorize(id Identity, addr string) error {
 		return ForbiddenError(fmt.Sprintf("%s is bound to node %s, not to this hub", addr, spec.Node))
 	}
 	if spec == nil {
-		return ForbiddenError(fmt.Sprintf("unknown agent %s; the hub owner must register it", addr))
+		return ForbiddenError(fmt.Sprintf("unknown agent %s; join this hub first (khoomei join)", addr))
 	}
 	if spec.Node == "" {
 		return ForbiddenError(fmt.Sprintf("%s has no node binding", addr))
@@ -162,10 +167,7 @@ func (h *Hub) Authorize(id Identity, addr string) error {
 	if !nodeMatches(spec.Node, id.Node) {
 		return ForbiddenError(fmt.Sprintf("%s is bound to %s, not %s", addr, spec.Node, id.Node))
 	}
-	wantLogin := ""
-	if o := h.Cfg.Owners[owner]; o != nil {
-		wantLogin = strings.ToLower(o.Login)
-	}
+	wantLogin := h.Dir.Login(owner)
 	if owner != h.Cfg.Owner && wantLogin == "" {
 		return ForbiddenError(fmt.Sprintf("owner %s has no registered login", owner))
 	}
@@ -185,7 +187,7 @@ func (h *Hub) Receive(id Identity, env *protocol.Envelope) (fresh bool, err erro
 	if err := h.Authorize(id, env.FromAgent); err != nil {
 		return false, err
 	}
-	if _, ok := h.Cfg.Agents[env.ToAgent]; !ok {
+	if h.Dir.Agent(env.ToAgent) == nil {
 		return false, BadRequestError("unknown to_agent " + env.ToAgent)
 	}
 	if err := h.route(env); err != nil {
@@ -222,6 +224,7 @@ type Observer interface {
 	Acked(agent string, ids []string)                   // these ids actually moved to acked/
 	Seen(agent string, waiting int)                     // agent visited its mailbox; waiting: +1 entering /wait, -1 leaving, 0 otherwise
 	Woke(env *protocol.Envelope, result, detail string) // result: ok | failed | downgraded
+	Joined(res JoinResult)                              // an agent joined by itself (or rejoined)
 }
 
 func (h *Hub) seen(agent string, waiting int) {
@@ -235,7 +238,7 @@ func (h *Hub) seen(agent string, waiting int) {
 func (h *Hub) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "v": protocol.Version, "version": Version, "owner": h.Cfg.Owner, "features": []string{"blob", "groups"}})
+		writeJSON(w, 200, map[string]any{"ok": true, "v": protocol.Version, "version": Version, "owner": h.Cfg.Owner, "features": []string{"blob", "groups", "join"}})
 	})
 	mux.HandleFunc("POST /msg", h.withIdentity(h.handleMsg))
 	mux.HandleFunc("GET /inbox", h.withIdentity(h.handleInbox))
@@ -244,6 +247,7 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("PUT /blob", h.withIdentity(h.handleBlobPut))
 	mux.HandleFunc("GET /blob/{sha}", h.withIdentity(h.handleBlobGet)) // GET patterns also answer HEAD
 	mux.HandleFunc("GET /contacts", h.withIdentity(h.handleContacts))
+	mux.HandleFunc("POST /join", h.withIdentity(h.handleJoin))
 	mux.HandleFunc("/admin", h.withAdmin(h.handleAdmin))
 	mux.HandleFunc("/admin/", h.withAdmin(h.handleAdmin))
 	mux.HandleFunc("GET /agents", h.withIdentity(func(w http.ResponseWriter, r *http.Request, id Identity) {
@@ -251,7 +255,7 @@ func (h *Hub) Handler() http.Handler {
 			fail(w, ForbiddenError("owner only"))
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "owner": h.Cfg.Owner, "owners": h.Cfg.Owners, "agents": h.Cfg.Agents})
+		writeJSON(w, 200, map[string]any{"ok": true, "owner": h.Cfg.Owner, "owners": h.Dir.People(), "agents": h.Dir.Agents()})
 	}))
 	return mux
 }
@@ -272,6 +276,9 @@ func (h *Hub) withIdentity(fn func(http.ResponseWriter, *http.Request, Identity)
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, code: 200}
 		id, err := h.Identify(r)
+		if err == nil && !id.Local && h.Dir.Blocked(id.Login) {
+			err = ForbiddenError("the hub owner has blocked " + id.Login)
+		}
 		who := "?"
 		if err != nil {
 			fail(sw, err)
@@ -398,9 +405,63 @@ func (h *Hub) handleContacts(w http.ResponseWriter, r *http.Request, id Identity
 	writeJSON(w, 200, map[string]any{"ok": true, "agent": agent, "groups": groups, "contacts": h.Contacts(agent)})
 }
 
+// Join lets an agent register itself (docs/GROUPS.md#报到). The hub owner's invitation is the
+// Tailscale share that let this node reach the hub at all; WhoIs says who it is. A new agent also
+// lands in every open group.
+func (h *Hub) Join(id Identity, req JoinRequest) (JoinResult, error) {
+	if id.Local {
+		return JoinResult{}, BadRequestError("agents on the hub machine are registered with khoomei agent NAME --local")
+	}
+	login := strings.ToLower(id.Login)
+	if login == "" || login == taggedLogin {
+		return JoinResult{}, ForbiddenError("this node is tagged, so it belongs to no person and cannot join; give khoomei an auth key without tags")
+	}
+	res, err := h.Dir.join(login, id.Node, h.IsOwner(id), req, time.Now())
+	if err != nil {
+		return res, err
+	}
+	if res.NewAgent {
+		for _, g := range h.Groups.OpenGroups() {
+			if _, err := h.Groups.Change(g, []string{res.Address}, nil); err != nil {
+				h.Logf("add %s to open group %s: %v", res.Address, g, err)
+			}
+		}
+	}
+	h.Logf("join: %s from %s (%s) new_person=%v new_agent=%v", res.Address, id.Node, login, res.NewPerson, res.NewAgent)
+	if h.Observer != nil {
+		h.Observer.Joined(res)
+	}
+	return res, nil
+}
+
+func (h *Hub) handleJoin(w http.ResponseWriter, r *http.Request, id Identity) {
+	var req JoinRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		fail(w, BadRequestError("invalid json"))
+		return
+	}
+	res, err := h.Join(id, req)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "address": res.Address, "owner": res.Owner, "hub_owner": res.HubOwner,
+		"new_person": res.NewPerson, "new_agent": res.NewAgent, "groups": nonNil(h.Groups.Of(res.Address))})
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
 func fail(w http.ResponseWriter, err error) {
 	var forbidden ForbiddenError
 	var bad BadRequestError
+	var conflict *JoinConflict
 	switch {
 	case errors.Is(err, ErrUnavailable):
 		w.Header().Set("Retry-After", "1")
@@ -409,6 +470,8 @@ func fail(w http.ResponseWriter, err error) {
 		writeJSON(w, 403, map[string]any{"ok": false, "error": err.Error()})
 	case errors.As(err, &bad):
 		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
+	case errors.As(err, &conflict):
+		writeJSON(w, 409, map[string]any{"ok": false, "error": err.Error(), "code": "taken"})
 	default:
 		writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})
 	}

@@ -14,12 +14,12 @@ Pick one agent name per tool so replies come back to the right session, e.g. `cl
 
 ```sh
 # machine already on Tailscale → direct; otherwise → tsnet with an auth key the user wrote to a file
-khoomei setup --hub khoomei-<owner>:7767 --owner <owner handle> --agent claude --transport direct --apply
-khoomei doctor
+khoomei setup --hub khoomei-<hub owner>:7767 --owner <user's handle> --agent claude --transport direct --apply
+khoomei join      # the hub learns this machine and the user's account from Tailscale; nobody registers anything
+khoomei doctor    # hub_health ok, joined true
 ```
 
-The hub owner must register this name and node: `khoomei agent claude --node <this machine's tailnet name>`.
-With `--transport tsnet` the node name is `khoomei-<owner>-claude`. If this computer belongs to a friend of the hub owner, the hub owner registers `khoomei owner <handle> --login <tailscale login>` first and the agent as `<handle>/claude`.
+`--owner` may be left out on someone else's hub: `join` then takes a handle from the user's Tailscale login (on a clash it says so; ask the user for one and pass `--owner`). On the user's own hub the agent lands in the private space. On a friend's hub it lands in their contacts and can talk once they put it into a group; until then sends fail with 403 "share no group", which is expected. A tsnet auth key must not carry tags.
 
 Register the MCP server (same binary, stdio, no ports):
 

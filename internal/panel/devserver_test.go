@@ -55,7 +55,9 @@ func TestDevServer(t *testing.T) {
 	h.Observer, h.Admin = p, p.Handler()
 	h.Identify = func(r *http.Request) (hub.Identity, error) { return hub.Identity{Local: true}, nil }
 	if os.Getenv("KHOOMEI_PANEL_AS") == "alice" {
-		h.Identify = func(r *http.Request) (hub.Identity, error) { return hub.Identity{Node: aliceNode, Login: aliceLogin}, nil }
+		h.Identify = func(r *http.Request) (hub.Identity, error) {
+			return hub.Identity{Node: aliceNode, Login: aliceLogin}, nil
+		}
 	}
 	for name, members := range map[string][]string{"项目X": {"junyi/grok", "junyi/claude", "alice/muse"}, "家人": {"junyi/muse", "alice/codex"}} {
 		_ = h.Groups.Create(name)
@@ -165,6 +167,14 @@ func TestDevServer(t *testing.T) {
 				time.Sleep(time.Duration(2+rand.IntN(5)) * time.Second)
 				ack(to, env)
 			}()
+		}
+	}()
+
+	// carol has only been shared the hub; her Grok joins by itself a few seconds in.
+	go func() {
+		time.Sleep(8 * time.Second)
+		if _, err := h.Join(hub.Identity{Node: "khoomei-carol-grok.tail7777.ts.net", Login: "carol@github"}, hub.JoinRequest{Agent: "grok"}); err != nil {
+			t.Logf("carol join: %v", err)
 		}
 	}()
 

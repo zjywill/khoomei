@@ -25,6 +25,8 @@ const GroupsFile = "groups.json"
 type Group struct {
 	Members []string `json:"members"` // full agent addresses, sorted
 	Created string   `json:"created"`
+	// Open: every agent that joins the hub from now on lands in this group too (docs/GROUPS.md#报到).
+	Open bool `json:"open,omitempty"`
 }
 
 type Groups struct {
@@ -84,9 +86,43 @@ func (g *Groups) All() map[string]Group {
 	defer g.mu.RUnlock()
 	out := make(map[string]Group, len(g.m))
 	for name, gr := range g.m {
-		out[name] = Group{Members: slices.Clone(gr.Members), Created: gr.Created}
+		out[name] = Group{Members: slices.Clone(gr.Members), Created: gr.Created, Open: gr.Open}
 	}
 	return out
+}
+
+// OpenGroups lists the groups new arrivals join automatically.
+func (g *Groups) OpenGroups() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var out []string
+	for name, gr := range g.m {
+		if gr.Open {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SetOpen makes a group take every new arrival, or stop doing so.
+func (g *Groups) SetOpen(name string, open bool) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.err != nil {
+		return g.err
+	}
+	gr := g.m[name]
+	if gr == nil {
+		return BadRequestError("no group " + name)
+	}
+	old := gr.Open
+	gr.Open = open
+	if err := g.save(); err != nil {
+		gr.Open = old
+		return err
+	}
+	return nil
 }
 
 func (g *Groups) Get(name string) (Group, bool) {
@@ -96,7 +132,7 @@ func (g *Groups) Get(name string) (Group, bool) {
 	if !ok {
 		return Group{}, false
 	}
-	return Group{Members: slices.Clone(gr.Members), Created: gr.Created}, true
+	return Group{Members: slices.Clone(gr.Members), Created: gr.Created, Open: gr.Open}, true
 }
 
 // Of lists the groups addr is a member of, by name.
@@ -197,7 +233,7 @@ func (g *Groups) Change(name string, add, remove []string) (Group, error) {
 		gr.Members = old
 		return Group{}, err
 	}
-	return Group{Members: slices.Clone(gr.Members), Created: gr.Created}, nil
+	return Group{Members: slices.Clone(gr.Members), Created: gr.Created, Open: gr.Open}, nil
 }
 
 // --------------------------------------------------------------------------- rules
@@ -213,7 +249,7 @@ func (h *Hub) IsOwnAgent(addr string) bool {
 func (h *Hub) ChangeGroup(name string, add, remove []string) (Group, error) {
 	for i, a := range add {
 		add[i] = h.Qualify(a)
-		if h.Cfg.Agents[add[i]] == nil {
+		if h.Dir.Agent(add[i]) == nil {
 			return Group{}, BadRequestError("unknown agent " + add[i] + "; register it first")
 		}
 	}
@@ -275,7 +311,7 @@ func (h *Hub) Contacts(addr string) []Contact {
 		return c
 	}
 	if h.IsOwnAgent(addr) {
-		for a := range h.Cfg.Agents {
+		for a := range h.Dir.Agents() {
 			if a != addr && h.IsOwnAgent(a) {
 				get(a).Private = true
 			}
@@ -299,4 +335,15 @@ func (h *Hub) Contacts(addr string) []Contact {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Address < out[j].Address })
 	return out
+}
+
+// LeaveGroups takes addrs out of every group they are in; used when agents leave the home.
+func (h *Hub) LeaveGroups(addrs []string) {
+	for _, a := range addrs {
+		for _, g := range h.Groups.Of(a) {
+			if _, err := h.Groups.Change(g, nil, []string{a}); err != nil {
+				h.Logf("remove %s from group %s: %v", a, g, err)
+			}
+		}
+	}
 }

@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/zjywill/khoomei/internal/config"
@@ -22,10 +27,13 @@ const defaultWakeRate = 6
 // per (from_agent, to_agent) per hour. Adapters run asynchronously; a failed wake is logged
 // and the message simply stays in the inbox.
 type Waker struct {
-	cfg  *config.Config
-	logf func(string, ...any)
-	mu   sync.Mutex
-	hits map[[2]string]hourCount
+	cfg *config.Config
+	// Lookup finds the recipient's spec; the hub points it at its directory so agents that joined
+	// by themselves are woken too. Nil means config.json only.
+	Lookup func(addr string) *config.AgentSpec
+	logf   func(string, ...any)
+	mu     sync.Mutex
+	hits   map[[2]string]hourCount
 	// OnWake, when set, hears the outcome of every wake the recipient's adapter was due:
 	// ok, failed (detail is the error) or downgraded (the hourly `now` budget ran out).
 	OnWake func(env *protocol.Envelope, result, detail string)
@@ -40,9 +48,16 @@ func NewWaker(cfg *config.Config, logf func(string, ...any)) *Waker {
 	return &Waker{cfg: cfg, logf: logf, hits: map[[2]string]hourCount{}}
 }
 
+func (w *Waker) spec(addr string) *config.AgentSpec {
+	if w.Lookup != nil {
+		return w.Lookup(addr)
+	}
+	return w.cfg.Agents[addr]
+}
+
 // Effective computes the level for env and consumes one `now` credit if it grants one.
 func (w *Waker) Effective(env *protocol.Envelope) string {
-	spec := w.cfg.Agents[env.ToAgent]
+	spec := w.spec(env.ToAgent)
 	level := env.RequestedWake()
 	if spec != nil && spec.WakeMax != "" {
 		level = protocol.MinWake(level, spec.WakeMax)
@@ -72,7 +87,7 @@ func (w *Waker) Effective(env *protocol.Envelope) string {
 
 // Wake fires the recipient's adapter when the effective level is `now`.
 func (w *Waker) Wake(env *protocol.Envelope) {
-	spec := w.cfg.Agents[env.ToAgent]
+	spec := w.spec(env.ToAgent)
 	if spec == nil || spec.Wake == nil {
 		return
 	}
@@ -133,23 +148,34 @@ func (w *Waker) fire(a *config.WakeAdapter, env *protocol.Envelope) error {
 		cmd.Stdin = bytes.NewReader(body)
 		return cmd.Run()
 	case "webhook":
-		url, err := readSecret(a.URLFile)
-		if err != nil {
-			return err
+		// The owner's own adapters name files; a joined agent's webhook came over the network and is
+		// called only through the guarded client.
+		client, target, secret := http.DefaultClient, a.URL, a.Secret
+		if target == "" {
+			var err error
+			if target, err = readSecret(a.URLFile); err != nil {
+				return err
+			}
+			if a.SecretFile != "" {
+				if secret, err = readSecret(a.SecretFile); err != nil {
+					return err
+				}
+			}
+		} else {
+			if err := checkWebhookURL(target); err != nil {
+				return err
+			}
+			client = guestClient
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if a.SecretFile != "" {
-			secret, err := readSecret(a.SecretFile)
-			if err != nil {
-				return err
-			}
+		if secret != "" {
 			req.Header.Set("Authorization", "Bearer "+secret)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return err
 		}
@@ -165,4 +191,60 @@ func (w *Waker) fire(a *config.WakeAdapter, env *protocol.Envelope) error {
 func readSecret(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	return strings.TrimSpace(string(b)), err
+}
+
+// --------------------------------------------------------------------------- guests' webhooks
+
+// A webhook URL handed over by a guest makes the hub send a request somewhere the guest chose. So
+// it must be https on the default port, and the address it resolves to must be public: never
+// loopback, private, link-local, CGNAT (which includes the tailnet) or otherwise special. The
+// check runs again on every dial, so DNS cannot swap in an inside address later, and redirects
+// are not followed.
+func checkWebhookURL(raw string) error {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil || len(raw) > 2048:
+		return errors.New("bad webhook url")
+	case u.Scheme != "https":
+		return errors.New("a webhook url must be https")
+	case u.User != nil:
+		return errors.New("a webhook url may not carry a user or password")
+	case u.Port() != "" && u.Port() != "443":
+		return errors.New("a webhook url must use the default https port")
+	case u.Hostname() == "":
+		return errors.New("bad webhook host")
+	}
+	if ip, err := netip.ParseAddr(u.Hostname()); err == nil && !publicAddr(ip) {
+		return errors.New("a webhook url must point at a public address")
+	}
+	return nil
+}
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+func publicAddr(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.IsValid() && ip.IsGlobalUnicast() && !ip.IsPrivate() && !cgnat.Contains(ip) && !tailnetV6.Contains(ip)
+}
+
+var guestClient = &http.Client{
+	Timeout: 20 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+	Transport: &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout: 10 * time.Second,
+			Control: func(_, address string, _ syscall.RawConn) error {
+				ap, err := netip.ParseAddrPort(address)
+				if err != nil || !publicAddr(ap.Addr()) {
+					return fmt.Errorf("webhook address %s is not public", address)
+				}
+				return nil
+			},
+		}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+		DisableKeepAlives:   true,
+	},
 }

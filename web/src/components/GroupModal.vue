@@ -17,6 +17,8 @@ const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
 const confirmDelete = ref(false)
+const open_ = ref(false) // new arrivals land in this group
+const initialOpen = ref(false)
 
 watch(open, async (o) => {
   if (!o) return
@@ -26,9 +28,12 @@ watch(open, async (o) => {
   const members = rooms.value.find((r) => r.kind === 'group' && r.name === props.group)?.members ?? []
   initial.value = new Set(members)
   picked.value = new Set(members)
+  open_.value = initialOpen.value = false
   loading.value = true
   try {
-    people.value = (await api.contacts()).people
+    const [book, groups] = await Promise.all([api.contacts(), props.group ? api.groups() : Promise.resolve({ groups: [] })])
+    people.value = book.people
+    open_.value = initialOpen.value = !!groups.groups.find((g) => g.name === props.group)?.open
   } catch (e) {
     error.value = errorText(e)
   } finally {
@@ -46,7 +51,11 @@ function toggle(addr: string, on: boolean | 'indeterminate') {
 const editing = computed(() => !!props.group)
 const added = computed(() => [...picked.value].filter((a) => !initial.value.has(a)))
 const removed = computed(() => [...initial.value].filter((a) => !picked.value.has(a)))
-const ready = computed(() => (editing.value ? added.value.length + removed.value.length > 0 : name.value.trim() !== '' && !name.value.includes('/')))
+const ready = computed(() =>
+  editing.value
+    ? added.value.length + removed.value.length > 0 || open_.value !== initialOpen.value
+    : name.value.trim() !== '' && !name.value.includes('/'),
+)
 const withAgents = computed(() => people.value.filter((p) => p.agents.length))
 const withoutAgents = computed(() => people.value.filter((p) => !p.agents.length && !p.me))
 
@@ -56,10 +65,12 @@ async function save() {
   error.value = ''
   try {
     if (editing.value) {
-      await api.changeGroup(props.group!, added.value, removed.value)
+      if (added.value.length + removed.value.length) await api.changeGroup(props.group!, added.value, removed.value)
+      if (open_.value !== initialOpen.value) await api.setGroupOpen(props.group!, open_.value)
     } else {
       const n = name.value.trim()
       await api.createGroup(n, [...picked.value])
+      if (open_.value) await api.setGroupOpen(n, true)
       navigate({ view: 'chat', room: `group/${n}` })
     }
     open.value = false
@@ -121,6 +132,12 @@ async function remove() {
         <p v-if="!loading && withoutAgents.length" class="text-xs text-muted">
           {{ withoutAgents.map((p) => p.handle).join('、') }} 还没登记 agent，登记后才能拉进群组。
         </p>
+
+        <USwitch
+          v-model="open_"
+          label="新来的 agent 自动进这个群组"
+          description="朋友的 agent 报到后直接就在这里，能和群里的 agent 说话，不用你再拉。"
+        />
 
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
       </form>

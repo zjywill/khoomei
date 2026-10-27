@@ -162,7 +162,20 @@ func (p *Panel) Woke(env *protocol.Envelope, result, detail string) {
 	}
 }
 
+func (p *Panel) Joined(res hub.JoinResult) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.push(Event{Type: "joined", Agent: res.Address, State: map[bool]string{true: "new", false: "again"}[res.NewAgent]})
+}
+
 // --------------------------------------------------------------------------- presence
+
+func (p *Panel) agentSpec(addr string) *config.AgentSpec {
+	if p.Hub == nil {
+		return p.cfg.Agents[addr]
+	}
+	return p.Hub.Dir.Agent(addr)
+}
 
 // state: online while a /wait is open or the agent touched its mailbox within onlineGrace; sleeping when
 // the hub can wake it; offline otherwise. Grace expiry raises no event, so the front end re-polls presence.
@@ -170,7 +183,7 @@ func (p *Panel) state(agent string, pr *presence) string {
 	if pr != nil && (pr.waiting > 0 || (!pr.last.IsZero() && p.now().Sub(pr.last) < onlineGrace)) {
 		return "online"
 	}
-	if spec := p.cfg.Agents[agent]; spec != nil && spec.Wake != nil {
+	if spec := p.agentSpec(agent); spec != nil && spec.Wake != nil {
 		return "sleeping"
 	}
 	return "offline"

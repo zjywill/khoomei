@@ -9,7 +9,7 @@ import StorageView from './components/StorageView.vue'
 import ContactsView from './components/ContactsView.vue'
 import LoginView from './components/LoginView.vue'
 import PasswordModal from './components/PasswordModal.vue'
-import { authStatus, fatal, needLogin, passwordOpen, route, selected, start } from './state'
+import { arrivals, authStatus, fatal, navigate, needLogin, passwordOpen, route, selected, start } from './state'
 
 const bp = useBreakpoints(breakpointsTailwind)
 const wide = bp.greaterOrEqual('lg') // detail as a third column
@@ -42,6 +42,21 @@ const unwatch = watch(authStatus, (st) => {
     actions: st.can_set ? [{ label: '设置密码', color: 'warning', variant: 'solid', onClick: () => void (passwordOpen.value = true) }] : [],
   })
 })
+// Someone came in by themselves: tell the owner, who decides which group they go into.
+watch(arrivals, (list) => {
+  for (const addr of list) {
+    toast.add({
+      title: `${addr} 来了`,
+      description: '自己报到进了你的通讯录。拉进群组之后才能和你的 agent 说话。',
+      icon: 'i-lucide-user-round-plus',
+      color: 'info',
+      duration: 0,
+      actions: [{ label: '去通讯录', color: 'info', variant: 'solid', onClick: () => navigate({ view: 'contacts' }) }],
+    })
+  }
+  if (list.length) arrivals.value = []
+})
+
 watch(
   () => authStatus.value?.password_set,
   (set) => set && toast.remove('no-password'),

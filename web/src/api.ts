@@ -78,12 +78,16 @@ export interface ContactAgent {
   node?: string
   local?: boolean
   wake?: string
+  /** Came in by itself (khoomei join), at this time; the owner may remove it. */
+  joined?: string
 }
 
 export interface Person {
   handle: string
   me?: boolean
   login?: string
+  /** Came in by itself (khoomei join), at this time; the owner may remove or block them. */
+  joined?: string
   agents: ContactAgent[]
 }
 
@@ -91,6 +95,8 @@ export interface Group {
   name: string
   members: string[]
   created: string
+  /** Every agent that joins the hub from now on lands here too. */
+  open?: boolean
 }
 
 export interface Presence {
@@ -102,7 +108,7 @@ export interface Presence {
 
 export interface PanelEvent {
   seq: number
-  type: 'message' | 'ack' | 'wake' | 'presence' | 'pruned' | 'groups'
+  type: 'message' | 'ack' | 'wake' | 'presence' | 'pruned' | 'groups' | 'joined'
   room?: string
   record?: Rec
   agent?: string
@@ -111,7 +117,8 @@ export interface PanelEvent {
   to_agent?: string
   result?: Rec['wake']
   detail?: string
-  state?: Presence['state']
+  /** presence: the new state; joined: new (first time) or again (a rejoin) */
+  state?: Presence['state'] | 'new' | 'again'
 }
 
 export interface Usage {
@@ -203,6 +210,9 @@ export const api = {
   createGroup: (name: string, members: string[]) => post<{}>('groups', { name, members }),
   deleteGroup: (name: string) => post<{}>('groups/delete', { name }),
   changeGroup: (name: string, add: string[], remove: string[]) => post<{}>('groups/members', { name, add, remove }),
+  setGroupOpen: (name: string, open: boolean) => post<{}>('groups/open', { name, open }),
+  removePerson: (handle: string, block: boolean) => post<{}>('people/remove', { handle, block }),
+  removeAgent: (address: string) => post<{}>('agents/remove', { address }),
   messages: (p: { room: string; member?: string; kinds?: string; unread?: boolean; before?: number; limit?: number }) =>
     call<{ messages: Rec[]; more: boolean }>('messages' + query(p)),
   message: (id: string) => call<{ message: Rec }>('message' + query({ id })),

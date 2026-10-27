@@ -49,6 +49,7 @@ Commands:
   panel-password  hub owner: set, reset (forgotten) or --clear the web panel's password
   serve    run the hub as an embedded tailnet node
   send     send a message to an agent
+  join     come into the hub's home by yourself: the hub learns who you are from Tailscale
   contacts list whom this agent may message, and its groups
   inbox    list pending messages
   wait     long-poll until a message arrives (exit 4 on timeout)
@@ -100,7 +101,7 @@ func run(args []string) error {
 		"setup": cmdSetup, "agent": cmdAgent, "serve": cmdServe, "send": cmdSend,
 		"inbox": cmdInbox, "wait": cmdWait, "ack": cmdAck, "doctor": cmdDoctor,
 		"watch": cmdWatch, "mcp": cmdMCP, "owner": cmdOwner, "prune": cmdPrune, "fetch": cmdFetch,
-		"panel-password": cmdPanelPassword, "group": cmdGroup, "contacts": cmdContacts,
+		"panel-password": cmdPanelPassword, "group": cmdGroup, "contacts": cmdContacts, "join": cmdJoin,
 		"version": func(context.Context, *config.Config, []string) error { fmt.Println("khoomei", hub.Version); return nil },
 	}
 	fn, ok := cmds[rest[0]]
@@ -685,6 +686,74 @@ func printMessages(items []protocol.Record, asJSON bool) {
 	}
 }
 
+// cmdJoin registers this caller's agent with its hub (docs/GROUPS.md#报到). Nothing about us has to be
+// typed in on the hub: the Tailscale share that lets this node reach it is the invitation, and the
+// hub reads our node and login from WhoIs. The handle the hub settles on is saved as our owner.
+func cmdJoin(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("join", flag.ExitOnError)
+	owner := fs.String("owner", "", "your handle on that hub; default: what this config says, else taken from your Tailscale login")
+	urlFile := fs.String("wake-webhook-url-file", "", "file holding a webhook the hub may call to wake this agent (https, public)")
+	secretFile := fs.String("wake-webhook-secret-file", "", "file holding that webhook's bearer secret")
+	fs.Parse(args)
+	if cfg.Role != config.RoleCaller || cfg.Agent == "" {
+		return errors.New("join runs on a caller; first: khoomei setup --hub HOST[:PORT] --agent NAME --apply")
+	}
+	if *owner == "" {
+		*owner = cfg.Owner
+	}
+	var wakeURL, wakeSecret string
+	if *urlFile != "" {
+		b, err := os.ReadFile(*urlFile)
+		if err != nil {
+			return err
+		}
+		wakeURL = strings.TrimSpace(string(b))
+		if *secretFile != "" {
+			if b, err = os.ReadFile(*secretFile); err != nil {
+				return err
+			}
+			wakeSecret = strings.TrimSpace(string(b))
+		}
+	}
+	// Pin the node name before the node comes up, so a new owner handle cannot rename it later.
+	if cfg.Transport == config.TransportTSNet && cfg.TSNet.Hostname == "" {
+		cfg.TSNet.Hostname = cfg.TSNetHostname()
+	}
+	c, done, err := hubClient(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer done()
+	if h, err := c.Health(ctx); err != nil {
+		return fmt.Errorf("cannot reach the hub: %w (has its owner shared it with your Tailscale account?)", err)
+	} else if !h.HasFeature("join") {
+		return fmt.Errorf("the hub runs khoomei %s, which cannot take agents by themselves; its owner needs 0.7 or newer", h.Version)
+	}
+	resp, err := c.Join(ctx, cfg.Agent, *owner, wakeURL, wakeSecret)
+	if err != nil {
+		return err
+	}
+	if resp.Status != 200 {
+		return errors.New(resp.Error)
+	}
+	cfg.Owner = resp.Owner
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	var groups []string
+	_ = json.Unmarshal(resp.Groups, &groups)
+	fmt.Printf("joined %s's home as %s\n", resp.HubOwner, resp.Address)
+	switch {
+	case resp.Owner == resp.HubOwner:
+		fmt.Println("this is the hub owner's own agent: it can message the owner's other agents now")
+	case len(groups) > 0:
+		fmt.Printf("in groups: %s; see whom you can reach with: khoomei contacts\n", strings.Join(groups, ", "))
+	default:
+		fmt.Printf("you are in %s's contacts; once they put you into a group you can talk (khoomei contacts shows it)\n", resp.HubOwner)
+	}
+	return nil
+}
+
 func cmdContacts(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("contacts", flag.ExitOnError)
 	as := fs.String("as", "", "agent whose contacts to list")
@@ -738,6 +807,7 @@ func cmdGroup(ctx context.Context, cfg *config.Config, args []string) error {
        khoomei group create NAME [AGENT...]
        khoomei group add NAME AGENT...
        khoomei group remove NAME AGENT...
+       khoomei group open NAME on|off      (agents that join from now on land here too)
        khoomei group delete NAME`
 	if cfg.Role != config.RoleHub {
 		return errors.New("group runs on the hub")
@@ -762,6 +832,8 @@ func cmdGroup(ctx context.Context, cfg *config.Config, args []string) error {
 		resp, err = c.GroupMembers(ctx, rest[0], nil, rest[1:])
 	case sub == "delete" && len(rest) == 1:
 		resp, err = c.GroupDelete(ctx, rest[0])
+	case sub == "open" && len(rest) == 2 && (rest[1] == "on" || rest[1] == "off"):
+		resp, err = c.GroupOpen(ctx, rest[0], rest[1] == "on")
 	default:
 		return errors.New(use)
 	}
@@ -779,13 +851,18 @@ func cmdGroup(ctx context.Context, cfg *config.Config, args []string) error {
 	var groups []struct {
 		Name    string   `json:"name"`
 		Members []string `json:"members"`
+		Open    bool     `json:"open"`
 	}
 	_ = json.Unmarshal(resp.Groups, &groups)
 	if len(groups) == 0 {
 		fmt.Println("(no groups)")
 	}
 	for _, g := range groups {
-		fmt.Printf("#%s  %s\n", g.Name, strings.Join(g.Members, ", "))
+		open := ""
+		if g.Open {
+			open = "  (open: newcomers join)"
+		}
+		fmt.Printf("#%s  %s%s\n", g.Name, strings.Join(g.Members, ", "), open)
 	}
 	return nil
 }
@@ -992,6 +1069,16 @@ func cmdDoctor(ctx context.Context, cfg *config.Config, _ []string) error {
 			report["hub_health"] = "unreachable: " + err.Error()
 		} else {
 			report["hub_health"] = resp
+			if cfg.Role == config.RoleCaller && cfg.Agent != "" && resp.HasFeature("groups") {
+				switch ct, err := c.Contacts(ctx, cfg.SelfAddress()); {
+				case err != nil:
+					report["joined"] = err.Error()
+				case ct.Status == 200:
+					report["joined"] = true
+				default:
+					report["joined"] = ct.Error
+				}
+			}
 		}
 	}
 	printJSON(report)

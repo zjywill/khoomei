@@ -35,6 +35,9 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/api/groups", p.handleGroupCreate)
 	mux.HandleFunc("POST /admin/api/groups/delete", p.handleGroupDelete)
 	mux.HandleFunc("POST /admin/api/groups/members", p.handleGroupMembers)
+	mux.HandleFunc("POST /admin/api/groups/open", p.handleGroupOpen)
+	mux.HandleFunc("POST /admin/api/people/remove", p.handlePersonRemove)
+	mux.HandleFunc("POST /admin/api/agents/remove", p.handleAgentRemove)
 	mux.HandleFunc("/admin/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"ok": false, "error": "no such api"})
 	})
@@ -167,7 +170,7 @@ func (p *Panel) handlePresence(w http.ResponseWriter, r *http.Request) {
 				po.LastSeen = pr.last.UTC().Format(time.RFC3339)
 			}
 		}
-		if spec := p.cfg.Agents[a]; v.owner && spec != nil && spec.Wake != nil {
+		if spec := p.agentSpec(a); v.owner && spec != nil && spec.Wake != nil {
 			po.Wake = spec.Wake.Type
 		}
 		out[a] = po
@@ -193,6 +196,7 @@ func (p *Panel) handleEvents(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case ev.Room != "" && !see(ev.Room):
 			case ev.Type == "presence" && !agents[ev.Agent]:
+			case ev.Type == "joined": // who arrives is the owner's business
 			default:
 				kept = append(kept, ev)
 			}

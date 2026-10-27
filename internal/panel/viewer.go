@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/zjywill/khoomei/internal/config"
 	"github.com/zjywill/khoomei/internal/hub"
 	"github.com/zjywill/khoomei/internal/protocol"
 )
@@ -43,6 +44,28 @@ func (p *Panel) viewerOf(r *http.Request, hash string) viewer {
 		v.friend = p.Hub.FriendOf(id)
 	}
 	return v
+}
+
+// agents is every registered agent: config.json plus the ones that joined by themselves.
+func (p *Panel) agents() map[string]*config.AgentSpec {
+	if p.Hub == nil {
+		return p.cfg.Agents
+	}
+	return p.Hub.Dir.Agents()
+}
+
+// people maps every friend's handle to their login.
+func (p *Panel) people() map[string]string {
+	if p.Hub == nil {
+		out := map[string]string{}
+		for h, o := range p.cfg.Owners {
+			if o != nil && h != p.cfg.Owner {
+				out[h] = o.Login
+			}
+		}
+		return out
+	}
+	return p.Hub.Dir.People()
 }
 
 func (p *Panel) groups() map[string]hub.Group {
@@ -85,7 +108,7 @@ func (p *Panel) sees(v viewer) func(room string) bool {
 func (p *Panel) visibleAgents(v viewer) map[string]bool {
 	out := map[string]bool{}
 	if v.owner {
-		for a := range p.cfg.Agents {
+		for a := range p.agents() {
 			out[a] = true
 		}
 		for a := range p.presence {
@@ -172,7 +195,7 @@ func (p *Panel) room(id string, all map[string]hub.Group) roomOut {
 		if ro.Title == "" {
 			ro.Title = "hub"
 		}
-		for addr := range p.cfg.Agents {
+		for addr := range p.agents() {
 			if o, _, _ := protocol.SplitAddress(addr); o == p.cfg.Owner {
 				members[addr] = true
 			}
@@ -213,17 +236,20 @@ type contactAgent struct {
 	Node    string   `json:"node,omitempty"`
 	Local   bool     `json:"local,omitempty"`
 	Wake    string   `json:"wake,omitempty"`
+	Joined  string   `json:"joined,omitempty"` // came in by itself (POST /join), at this time
 }
 
 type person struct {
 	Handle string         `json:"handle"`
 	Me     bool           `json:"me,omitempty"` // the hub owner
 	Login  string         `json:"login,omitempty"`
+	Joined string         `json:"joined,omitempty"` // came in by itself; the owner may remove them from the panel
 	Agents []contactAgent `json:"agents"`
 }
 
-// handleContacts is the address book: the owner, every registered friend, and their agents with
-// the groups each one is in. A friend appears here as soon as they are registered, before any group.
+// handleContacts is the address book: the owner, every friend who joined or was registered, and their
+// agents with the groups each one is in. A friend appears here as soon as their agent joins, before
+// any group.
 // A guest sees only the people and agents of the groups they are in, and no nodes or logins.
 func (p *Panel) handleContacts(w http.ResponseWriter, r *http.Request) {
 	v := viewerFrom(r.Context())
@@ -239,16 +265,20 @@ func (p *Panel) handleContacts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	people := map[string]*person{}
+	logins := p.people()
 	get := func(handle string) *person {
 		if pp := people[handle]; pp != nil {
 			return pp
 		}
 		pp := &person{Handle: handle, Me: handle == p.cfg.Owner, Agents: []contactAgent{}}
 		if v.owner {
-			if o := p.cfg.Owners[handle]; o != nil {
-				pp.Login = o.Login
+			if l := logins[handle]; l != "" {
+				pp.Login = l
 			} else if pp.Me && p.Hub != nil {
 				pp.Login = p.Hub.SelfLogin
+			}
+			if p.Hub != nil {
+				pp.Joined, _ = p.Hub.Dir.Joined(handle)
 			}
 		}
 		people[handle] = pp
@@ -256,11 +286,11 @@ func (p *Panel) handleContacts(w http.ResponseWriter, r *http.Request) {
 	}
 	if v.owner {
 		get(p.cfg.Owner)
-		for handle := range p.cfg.Owners {
+		for handle := range logins {
 			get(handle)
 		}
 	}
-	for addr, spec := range p.cfg.Agents {
+	for addr, spec := range p.agents() {
 		if !v.owner && len(groupsOf[addr]) == 0 {
 			continue
 		}
@@ -274,6 +304,9 @@ func (p *Panel) handleContacts(w http.ResponseWriter, r *http.Request) {
 			ca.Node, ca.Local = spec.Node, spec.Local
 			if spec.Wake != nil {
 				ca.Wake = spec.Wake.Type
+			}
+			if p.Hub != nil {
+				ca.Joined, _ = p.Hub.Dir.JoinedAgentAt(addr)
 			}
 		}
 		pp := get(handle)
@@ -299,6 +332,7 @@ type groupOut struct {
 	Name    string   `json:"name"`
 	Members []string `json:"members"`
 	Created string   `json:"created"`
+	Open    bool     `json:"open,omitempty"`
 }
 
 func (p *Panel) handleGroups(w http.ResponseWriter, r *http.Request) {
@@ -308,7 +342,7 @@ func (p *Panel) handleGroups(w http.ResponseWriter, r *http.Request) {
 	out := []groupOut{}
 	for _, name := range sortedKeys(all) {
 		if v.owner || mine[name] {
-			out = append(out, groupOut{Name: name, Members: all[name].Members, Created: all[name].Created})
+			out = append(out, groupOut{Name: name, Members: all[name].Members, Created: all[name].Created, Open: v.owner && all[name].Open})
 		}
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "groups": out})
@@ -384,5 +418,53 @@ func (p *Panel) handleGroupMembers(w http.ResponseWriter, r *http.Request) {
 			p.logf("group %s members: %v", req.Name, g.Members)
 		}
 		return err
+	})
+}
+
+func (p *Panel) handleGroupOpen(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+		Open bool   `json:"open"`
+	}
+	p.groupWrite(w, r, &req, func(h *hub.Hub) error {
+		if err := h.Groups.SetOpen(req.Name, req.Open); err != nil {
+			return err
+		}
+		p.logf("group %s open=%v", req.Name, req.Open)
+		return nil
+	})
+}
+
+// handlePersonRemove takes someone who joined by themselves out of the home: their agents leave the
+// directory and every group. block also turns their Tailscale login away from now on. Their old
+// messages stay.
+func (p *Panel) handlePersonRemove(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Handle string `json:"handle"`
+		Block  bool   `json:"block"`
+	}
+	p.groupWrite(w, r, &req, func(h *hub.Hub) error {
+		gone, err := h.Dir.Remove(req.Handle, req.Block)
+		if err != nil {
+			return err
+		}
+		h.LeaveGroups(gone)
+		p.logf("removed %s (block=%v): %v", req.Handle, req.Block, gone)
+		return nil
+	})
+}
+
+// handleAgentRemove takes one agent that joined by itself out of the home.
+func (p *Panel) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Address string `json:"address"`
+	}
+	p.groupWrite(w, r, &req, func(h *hub.Hub) error {
+		if err := h.Dir.RemoveAgent(req.Address); err != nil {
+			return err
+		}
+		h.LeaveGroups([]string{req.Address})
+		p.logf("removed agent %s", req.Address)
+		return nil
 	})
 }

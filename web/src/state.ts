@@ -60,8 +60,10 @@ export const isOwner = computed(() => viewer.value.role === 'owner')
 /** Whose names are shown without their handle: the owner's, or in a guest view the guest's own. */
 export const me = computed(() => (isOwner.value ? owner.value : (viewer.value.handle ?? '')))
 export const rooms = ref<Room[]>([])
-/** Bumped whenever groups change, so views that list them reload. */
+/** Bumped whenever groups or the contacts change, so views that list them reload. */
 export const groupsVersion = ref(0)
+/** Agents that joined by themselves while the panel was open; App turns each into a toast. */
+export const arrivals = ref<string[]>([])
 export const presence = ref<Record<string, Presence>>({})
 export const connection = ref<'connecting' | 'live' | 'retrying'>('connecting')
 export const fatal = ref('') // 403 and friends: nothing to retry
@@ -239,7 +241,7 @@ function apply(ev: PanelEvent) {
     }
     case 'presence': {
       const p = presence.value[ev.agent!]
-      if (p) p.state = ev.state!
+      if (p) p.state = ev.state as Presence['state']
       void loadPresence()
       break
     }
@@ -247,6 +249,13 @@ function apply(ev: PanelEvent) {
       groupsVersion.value++
       refreshRooms()
       void loadPresence()
+      break
+    }
+    case 'joined': {
+      groupsVersion.value++
+      refreshRooms()
+      void loadPresence()
+      if (ev.state === 'new') arrivals.value = [...arrivals.value, ev.agent!]
       break
     }
     case 'pruned': {

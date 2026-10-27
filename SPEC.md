@@ -35,7 +35,7 @@ agent 用 **`owner/agent`** 两层地址寻址：`junyi/grok`、`alice/muse`。�
 ## 2. 接口
 
 ### `GET /health`
-不鉴权。`{"ok":true,"v":1,"version":"0.6.0","owner":"junyi","features":["blob","groups"]}`。`features` 列出可选能力，0.5 之前的 hub 没有这个字段；`groups` 表示 hub 认信封的 `group` 字段和 `/contacts`（0.6 起）。
+不鉴权。`{"ok":true,"v":1,"version":"0.7.0","owner":"junyi","features":["blob","groups","join"]}`。`features` 列出可选能力，0.5 之前的 hub 没有这个字段；`groups` 表示 hub 认信封的 `group` 字段和 `/contacts`（0.6 起）。
 
 ### `POST /msg`
 Body 是一封信封（§3），上限 256 KiB，`Content-Type: application/json`。
@@ -49,6 +49,16 @@ Body 是一封信封（§3），上限 256 KiB，`Content-Type: application/json
 | 413 / 415 / 503 | 太大 / 不是 JSON / 身份查询不可用 |
 
 响应：`{"ok":true,"id":"…","duplicate":false,"to_agent":"junyi/grok"}`（`to_agent` 为规范化后的全名）
+
+### `POST /join`
+agent 自己报到（[docs/GROUPS.md](docs/GROUPS.md#报到)）。只接受 tailnet peer，且节点要有真人登录身份（打了 tag 的 403）；回环 400。Body：`{"agent":"grok","owner":"alice"?,"wake":{"url":"https://…","secret":"…"}?}`，未知字段 400。
+
+- 身份全从 WhoIs 来：登录身份等于主人的（§1 的 owner 判定）就是主人的 agent；否则这个登录身份在本 hub 已有 handle 就用它（`owner` 不同则 400），没有就用 `owner` 或从登录名取一个（被占 409 `taken`），记进 `contacts.json`。
+- 地址是 `<handle>/<agent>`，绑定到发起请求的节点；同一个人再报到会把绑定挪到新节点。`config.json` 里已有的地址只认原来的节点（别的节点 409）。
+- `wake.url` 必须是 https、默认端口、公网地址；hub 调用时每次拨号都会再检查，不跟随重定向。
+- 新 agent 自动进所有 open 的群组。
+
+响应：`{"ok":true,"address":"alice/grok","owner":"alice","hub_owner":"junyi","new_person":true,"new_agent":true,"groups":[]}`
 
 ### `GET /contacts?agent=NAME`
 `agent` 按 §1 判定。返回它能发信的地址：主人的 agent 能找主人的其他 agent（`private`），以及同群组的成员（`groups` 是共同的群组）。
@@ -188,12 +198,14 @@ caller 端：`{"role":"caller","owner":"alice","agent":"muse","hub":"khoomei-jun
 
 ## 7. 朋友接入（Tailscale 节点分享）
 
-朋友不需要加入你的 tailnet，也不需要公网服务器。你在 Tailscale 管理后台把 hub 这一个节点**分享**给朋友的账户；朋友的设备能连 hub，看不到你的其他机器。连接到 hub 时 `WhoIs` 返回朋友节点的名字和**朋友的登录身份**，hub 据此做 §1 的两重判定。
+朋友不需要加入你的 tailnet，也不需要公网服务器，也不需要自己有 hub。你在 Tailscale 管理后台把 hub 这一个节点**分享**给朋友的账户；朋友的设备能连 hub，看不到你的其他机器。连接到 hub 时 `WhoIs` 返回朋友节点的名字和**朋友的登录身份**，hub 据此做 §1 的两重判定。
 
-步骤：hub 所有者 `khoomei owner alice --login alice@github --apply`，再 `khoomei agent alice/muse --node <alice 的节点名> --apply`，重启 hub；alice 那边 `khoomei setup --hub <hub 节点的 tailnet 地址> --owner alice --agent muse --apply`。这时 alice 只是通讯录里的联系人：hub 所有者把她的 agent 和自己的 agent 拉进同一个群组（`khoomei group create 项目X grok alice/muse`，或在面板里）之后，alice 的 agent 才能用 `--to grok`（裸名，指 hub 所有者的 grok）或 `--to junyi/grok`。
+步骤：alice 那边 `khoomei setup --hub khoomei-<hub 所有者>:7767 --agent muse --apply`，再 `khoomei join`（`POST /join`）。hub 从 WhoIs 认出她，记下 `alice/muse` 和她的节点，hub 所有者什么都不用填。这时 alice 只是通讯录里的联系人：hub 所有者把她的 agent 和自己的 agent 拉进同一个群组（面板里，或 `khoomei group create 项目X grok alice/muse`；或者事先把某个群组设成 open）之后，alice 的 agent 才能用 `--to junyi/grok`。
+
+hub 所有者也可以照旧手动登记（`khoomei owner alice --login alice@github`、`khoomei agent alice/muse --node …`，改 `config.json`，重启 hub），手动登记的优先。
 
 两个人都有 hub 时，互相分享节点，各自的 hub 作为对方 hub 的 caller（hub 之间转发是下一步，本版不做）。
 
 ## 8. 刻意不做
 
-请求生命周期状态、hub 之间互相转发、跨 hub 的全局身份（地址只在一个 hub 内有意义）、OAuth、任何公网暴露、对系统 tailscaled 的依赖。信封留了 `kind` 和 `data` 给上层约定；`files` 是 0.5 加的，`group` 是 0.6 加的，旧 hub 会按"未知字段一律 400"拒收，所以 hub 先升级；caller 发附件前看 `/health` 的 `features` 里有没有 `blob`，只在需要时才带 `group`。
+请求生命周期状态、hub 之间互相转发、跨 hub 的全局身份（地址只在一个 hub 内有意义）、OAuth、任何公网暴露、对系统 tailscaled 的依赖。信封留了 `kind` 和 `data` 给上层约定；`files` 是 0.5 加的，`group` 是 0.6 加的，`/join` 是 0.7 加的（看 `features` 里的 `join`），旧 hub 会按"未知字段一律 400"拒收，所以 hub 先升级；caller 发附件前看 `/health` 的 `features` 里有没有 `blob`，只在需要时才带 `group`。

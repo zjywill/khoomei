@@ -43,10 +43,8 @@ EOF
 
 K="sudo -u khoomei env KHOOMEI_HOME=/var/lib/khoomei khoomei"
 $K setup --hub-role --owner <handle> --auth-key-file /var/lib/khoomei/authkey --apply
-$K agent muse --node <Muse 节点名> --apply
-$K agent grok --node khoomei-<handle>-grok \
-    --wake-webhook-url-file /var/lib/khoomei/wake-url --wake-webhook-secret-file /var/lib/khoomei/wake-secret --apply
-# authkey / wake-url / wake-secret 各一行，chown khoomei，chmod 600
+# authkey 一行，chown khoomei，chmod 600
+# agent 不用在这里登记：它们装好后自己 khoomei join（docs/GROUPS.md#报到）
 systemctl enable --now khoomei
 journalctl -u khoomei -f
 ```
@@ -62,6 +60,8 @@ install -m 755 /tmp/khoomei /usr/local/bin/khoomei && systemctl restart khoomei
 ```
 
 配置、`tsnet/`、信箱都不动。先升 hub 再升 caller；协议 `v` 不变，hub 一直接受旧 caller。
+
+**升到 0.7.0**：agent 可以自己报到了（`khoomei join`）。请朋友来只要在 Tailscale 后台把 hub 分享给他；已经手动登记的照旧。
 
 **升到 0.6.0 注意**：朋友的 agent 要和你的 agent 同在一个群组才能互相发信，升级后在那之前都会收到 403。在面板的通讯录里把原来在往来的两边拉进同一个群组，或者 `khoomei group create <名字> <你的 agent> <朋友/agent>`。见 [GROUPS.md](GROUPS.md#从-05-升级)。
 
@@ -86,8 +86,9 @@ hub 自带一个群聊面板（[PANEL.md](PANEL.md)），地址是 `http://khoom
 
 ```sh
 $K doctor                      # 状态
-$K agent <name> --node … --apply
-$K owner alice --login alice@github --apply   # 朋友
+$K group list                  # 群组；group create/add/remove/open/delete 见 GROUPS.md
+$K agent <name> --node … --apply              # 手动登记（一般用不着：agent 会自己报到）
+$K owner alice --login alice@github --apply   # 手动登记朋友（同上）
 $K prune --older-than 7d       # 看看能清掉多少；加 --apply 才删
 curl -s http://127.0.0.1:7767/health
 ```

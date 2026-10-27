@@ -85,8 +85,8 @@ func (h *Hub) FriendOf(id Identity) string {
 	if id.Local || login == "" || login == taggedLogin {
 		return ""
 	}
-	for handle, o := range h.Cfg.Owners {
-		if handle != h.Cfg.Owner && o != nil && strings.EqualFold(o.Login, login) {
+	for handle, l := range h.Dir.People() {
+		if l == login {
 			return handle
 		}
 	}
